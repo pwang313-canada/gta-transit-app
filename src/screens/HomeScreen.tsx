@@ -1,22 +1,22 @@
-// src/screens/HomeScreen.tsx
-import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ActivityIndicator,
-  Alert,
-  RefreshControl,
-  FlatList,
-  Platform,
-} from 'react-native';
+// src/screens/HomeScreen.tsx (fixed - no undefined values)
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as SQLite from 'expo-sqlite';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Platform,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import RouteMapView from '../components/RouteMapView';
 import SearchablePicker from '../components/SearchableRoutePicker';
 import DatabaseService from '../services/DatabaseService';
 import GoTransitService from '../services/GoTransitService';
-import RouteMapView from '../components/RouteMapView';
 
 interface Route {
   route_id: string;
@@ -54,9 +54,7 @@ interface RouteGroup {
   routeNumber: string;
   routeLongName: string;
   isBus: boolean;
-  inbound?: Route;
-  outbound?: Route;
-  variant?: string;
+  variant: string;
 }
 
 const secondsToTimeString = (seconds: number): string => {
@@ -109,55 +107,50 @@ export default function HomeScreen() {
       setLoading(true);
       const db = SQLite.openDatabaseSync('go_transit.db');
 
-      const routeList = await db.getAllAsync<any>(`
-        SELECT DISTINCT
-          r.route_id,
+      // Get all unique variants from trips table for bus routes
+      const variantList = await db.getAllAsync<any>(`
+        SELECT DISTINCT 
           r.route_short_name,
           r.route_long_name,
-          t.direction_id,
-          t.route_variant as variant
+          t.route_variant
         FROM routes r
         INNER JOIN trips t ON r.route_id = t.route_id
-        WHERE t.direction_id IS NOT NULL
-        ORDER BY r.route_short_name, t.route_variant, t.direction_id
+        WHERE t.route_variant IS NOT NULL 
+          AND t.route_variant != ''
+          AND t.route_variant != r.route_short_name
+        ORDER BY t.route_variant
       `);
 
       const groups: { [key: string]: RouteGroup } = {};
 
-      routeList.forEach((route: any) => {
-        const isBus = /^\d/.test(route.route_short_name);
-        let routeNumber = route.route_short_name;
+      variantList.forEach((item: any) => {
+        const variant = item.route_variant;
+        groups[variant] = {
+          routeNumber: variant,
+          routeLongName: item.route_long_name,
+          isBus: true,
+          variant: variant
+        };
+      });
 
-        if (isBus && route.variant && route.variant !== route.route_short_name) {
-          routeNumber = route.variant;
-        }
+      // Also get train routes (non-bus)
+      const trainRoutes = await db.getAllAsync<any>(`
+        SELECT DISTINCT 
+          r.route_short_name,
+          r.route_long_name
+        FROM routes r
+        INNER JOIN trips t ON r.route_id = t.route_id
+        WHERE NOT EXISTS (SELECT 1 FROM trips t2 WHERE t2.route_variant IS NOT NULL AND t2.route_variant != '' AND t2.route_variant != r.route_short_name LIMIT 1)
+        ORDER BY r.route_short_name
+      `);
 
-        const groupKey = isBus ? `${route.route_short_name}_${route.variant || ''}` : route.route_short_name;
-
-        if (!groups[groupKey]) {
-          groups[groupKey] = {
-            routeNumber: routeNumber,
+      trainRoutes.forEach((route: any) => {
+        if (!groups[route.route_short_name]) {
+          groups[route.route_short_name] = {
+            routeNumber: route.route_short_name,
             routeLongName: route.route_long_name,
-            isBus: isBus,
-            variant: isBus ? route.variant : undefined,
-          };
-        }
-
-        if (route.direction_id === 0) {
-          groups[groupKey].inbound = {
-            route_id: route.route_id,
-            route_short_name: route.route_short_name,
-            route_long_name: route.route_long_name,
-            direction_id: route.direction_id,
-            variant: route.variant
-          };
-        } else if (route.direction_id === 1) {
-          groups[groupKey].outbound = {
-            route_id: route.route_id,
-            route_short_name: route.route_short_name,
-            route_long_name: route.route_long_name,
-            direction_id: route.direction_id,
-            variant: route.variant
+            isBus: false,
+            variant: route.route_short_name
           };
         }
       });
@@ -168,10 +161,18 @@ export default function HomeScreen() {
           return a.isBus ? -1 : 1;
         }
         if (a.isBus) {
-          const aNum = parseInt(a.routeNumber);
-          const bNum = parseInt(b.routeNumber);
-          if (!isNaN(aNum) && !isNaN(bNum) && aNum !== bNum) {
-            return aNum - bNum;
+          const aMatch = a.routeNumber.match(/(\d+)([A-Z]*)/);
+          const bMatch = b.routeNumber.match(/(\d+)([A-Z]*)/);
+          
+          if (aMatch && bMatch) {
+            const aNum = parseInt(aMatch[1]);
+            const bNum = parseInt(bMatch[1]);
+            if (aNum !== bNum) {
+              return aNum - bNum;
+            }
+            const aLetter = aMatch[2] || '';
+            const bLetter = bMatch[2] || '';
+            return aLetter.localeCompare(bLetter);
           }
           return a.routeNumber.localeCompare(b.routeNumber);
         }
@@ -179,7 +180,7 @@ export default function HomeScreen() {
       });
 
       setRouteGroups(groupedRoutes);
-      console.log(`Loaded ${groupedRoutes.length} route groups`);
+      console.log(`\n✅ Loaded ${groupedRoutes.length} route groups`);
     } catch (error) {
       console.error('Failed to load routes:', error);
       Alert.alert('Error', 'Failed to load transit data');
@@ -199,6 +200,7 @@ export default function HomeScreen() {
     setNextSchedule(null);
     setShowArrivalTime(false);
     setShowMap(false);
+    setStops([]);
   };
 
   const findUnionStation = (stopsList: Stop[]): Stop | null => {
@@ -212,24 +214,79 @@ export default function HomeScreen() {
   const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise<void> => {
     if (!selectedRouteGroup) return;
 
-    const route = direction === 'inbound' ? selectedRouteGroup.inbound : selectedRouteGroup.outbound;
-
-    if (!route) {
-      Alert.alert('Not Available', `No ${direction} route data available`);
-      return;
-    }
-
     setSelectedDirection(direction);
-    setSelectedRoute(route);
+    setSelectedRoute(null);
     setSchedule([]);
     setSchedulesWithArrival([]);
     setNextSchedule(null);
     setShowArrivalTime(false);
     setShowMap(false);
+    setStops([]);
 
     try {
-      const variant = selectedRouteGroup.isBus ? selectedRouteGroup.variant : undefined;
-      const stopsList = await DatabaseService.getStopsByRoute(route.route_id, variant);
+      const serviceId = formatDate(selectedDate).replace(/-/g, '');
+      const db = SQLite.openDatabaseSync('go_transit.db');
+      
+      // Get the base route number (e.g., "21" from "21B")
+      const baseRouteNumber = selectedRouteGroup.routeNumber.match(/\d+/)?.[0] || selectedRouteGroup.routeNumber;
+      
+      console.log(`\n🔍 Looking for routes: ${baseRouteNumber}, service: ${serviceId}, direction: ${direction === 'inbound' ? 0 : 1}`);
+      
+      // Step 1: Find routes with matching route_short_name
+      const routeQuery = `
+        SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
+        FROM routes r
+        INNER JOIN trips t ON r.route_id = t.route_id
+        WHERE r.route_short_name = ?
+          AND t.service_id = ?
+          AND t.direction_id = ?
+      `;
+      
+      const queryParams: (string | number)[] = [baseRouteNumber, serviceId, direction === 'inbound' ? 0 : 1];
+      const availableRoutes = await db.getAllAsync<any>(routeQuery, queryParams);
+      
+      console.log(`Found ${availableRoutes.length} routes`);
+      
+      if (availableRoutes.length === 0) {
+        Alert.alert('No Routes', `No routes available for ${selectedRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
+        return;
+      }
+      
+      // Step 2: Find which route is valid for this date
+      let selectedRouteData = null;
+      for (const route of availableRoutes) {
+        const isValid = GoTransitService.isRouteValidForDate(route.route_id, selectedDate);
+        console.log(`  ${route.route_id}: ${isValid ? 'VALID' : 'INVALID'}`);
+        if (isValid) {
+          selectedRouteData = route;
+          break;
+        }
+      }
+      
+      if (!selectedRouteData) {
+        Alert.alert('No Valid Route', `No valid route found for ${selectedRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
+        return;
+      }
+      
+      const selectedRouteObj = {
+        route_id: selectedRouteData.route_id,
+        route_short_name: selectedRouteData.route_short_name,
+        route_long_name: selectedRouteData.route_long_name,
+        direction_id: direction === 'inbound' ? 0 : 1,
+        variant: selectedRouteGroup.variant
+      };
+      
+      setSelectedRoute(selectedRouteObj);
+      
+      // Step 3: Load stops for this specific variant
+      console.log(`Loading stops for route: ${selectedRouteData.route_id}, variant: ${selectedRouteGroup.variant}`);
+      const stopsList = await DatabaseService.getStopsByRoute(
+        selectedRouteData.route_id, 
+        selectedRouteGroup.variant
+      );
+      
+      console.log(`Found ${stopsList.length} stops for variant ${selectedRouteGroup.variant}`);
+      
       const typedStops: Stop[] = stopsList.map((stop: any) => ({
         stop_id: stop.stop_id,
         stop_name: stop.stop_name,
@@ -241,16 +298,11 @@ export default function HomeScreen() {
       if (direction === 'inbound') {
         setArrivalStop(unionStop || null);
         setDepartureStop(null);
-        if (unionStop) {
-          console.log(`Default arrival set to: ${unionStop.stop_name}`);
-        }
-      } else if (direction === 'outbound') {
+      } else {
         setDepartureStop(unionStop || null);
         setArrivalStop(null);
-        if (unionStop) {
-          console.log(`Default departure set to: ${unionStop.stop_name}`);
-        }
       }
+      
     } catch (error) {
       console.error('Failed to load stops:', error);
       Alert.alert('Error', 'Failed to load stops. Please try again.');
@@ -271,11 +323,14 @@ export default function HomeScreen() {
     }
     if (selectedDate) {
       setSelectedDate(selectedDate);
+      setSelectedDirection(null);
+      setSelectedRoute(null);
       setDepartureStop(null);
       setArrivalStop(null);
       setSchedule([]);
       setSchedulesWithArrival([]);
       setNextSchedule(null);
+      setStops([]);
     }
   };
 
@@ -287,81 +342,132 @@ export default function HomeScreen() {
       const queryDate = selectedDate;
       const today = new Date();
       const isToday = queryDate.toDateString() === today.toDateString();
-      const variant = selectedRouteGroup?.isBus ? selectedRouteGroup?.variant : undefined;
-      const directionId = selectedRoute?.direction_id;
-
+      const serviceId = formatDate(queryDate).replace(/-/g, '');
+      const db = SQLite.openDatabaseSync('go_transit.db');
+      
+      console.log(`\n📅 Loading schedule for: ${selectedRoute.route_id}, variant: ${selectedRoute.variant}, date: ${serviceId}`);
+      
+      // Query trips with the specific variant
+      const tripsQuery = `
+        SELECT DISTINCT trip_id
+        FROM trips 
+        WHERE route_id = ? 
+          AND service_id = ?
+          AND direction_id = ?
+          AND route_variant = ?
+      `;
+      
+      const queryParams: (string | number)[] = [
+        selectedRoute.route_id, 
+        serviceId, 
+        selectedRoute.direction_id || 0,
+        selectedRoute.variant || ''
+      ];
+      
+      const trips = await db.getAllAsync<any>(tripsQuery, queryParams);
+      
+      console.log(`Found ${trips.length} trips for variant ${selectedRoute.variant}`);
+      
+      if (trips.length === 0) {
+        setLoadingSchedule(false);
+        Alert.alert('No Schedule', `No trips found for ${selectedRoute.variant} on ${formatDate(queryDate)}`);
+        return;
+      }
+      
+      const tripIds = [...new Set(trips.map(t => t.trip_id))];
+      
       if (arrivalStop) {
         setShowArrivalTime(true);
-        const schedules = await DatabaseService.getScheduleWithArrival(
-          selectedRoute.route_id,
-          departureStop.stop_id,
-          arrivalStop.stop_id,
-          queryDate,
-          variant,
-          directionId
-        );
         
-        const uniqueSchedules = [];
-        const seenTripIds = new Set();
-        for (const schedule of schedules) {
-          if (!seenTripIds.has(schedule.trip_id)) {
-            seenTripIds.add(schedule.trip_id);
-            uniqueSchedules.push(schedule);
+        const schedulePromises = tripIds.map(async (tripId) => {
+          const scheduleQuery = `
+            SELECT 
+              st_departure.departure_time,
+              st_arrival.arrival_time,
+              t.trip_headsign as destination
+            FROM stop_times st_departure
+            JOIN stop_times st_arrival ON st_departure.trip_id = st_arrival.trip_id
+            JOIN trips t ON st_departure.trip_id = t.trip_id
+            WHERE st_departure.trip_id = ?
+              AND st_arrival.trip_id = ?
+              AND st_departure.stop_id = ?
+              AND st_arrival.stop_id = ?
+              AND st_departure.stop_sequence < st_arrival.stop_sequence
+          `;
+          
+          const params: (string | number)[] = [tripId, tripId, departureStop.stop_id, arrivalStop.stop_id];
+          const result = await db.getAllAsync<any>(scheduleQuery, params);
+          
+          if (result.length > 0) {
+            return {
+              trip_id: tripId,
+              departure_time: result[0].departure_time,
+              arrival_time: result[0].arrival_time,
+              destination: result[0].destination || 'Unknown',
+              departure_stop: departureStop.stop_id,
+              arrival_stop: arrivalStop.stop_id,
+              travel_time_minutes: Math.round((result[0].arrival_time - result[0].departure_time) / 60)
+            };
           }
+          return null;
+        });
+        
+        const results = await Promise.all(schedulePromises);
+        let validResults = results.filter(r => r !== null) as TripWithArrival[];
+        validResults.sort((a, b) => a.departure_time - b.departure_time);
+        
+        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
+        if (isToday) {
+          validResults = validResults.filter(r => r.departure_time >= currentSeconds);
         }
         
-        setSchedulesWithArrival(uniqueSchedules);
-
-        let next = null;
-        if (!isToday) {
-          next = uniqueSchedules.length > 0 ? uniqueSchedules[0] : null;
-        } else {
-          next = await DatabaseService.getNextScheduleWithArrival(
-            selectedRoute.route_id,
-            departureStop.stop_id,
-            arrivalStop.stop_id,
-            queryDate,
-            variant,
-            directionId
-          );
-        }
-        setNextSchedule(next);
+        setSchedulesWithArrival(validResults);
+        setNextSchedule(validResults.length > 0 ? validResults[0] : null);
+        
+        console.log(`Found ${validResults.length} schedules with arrival`);
       } else {
         setShowArrivalTime(false);
-        const recentSchedule = await DatabaseService.getRecentSchedule(
-          selectedRoute.route_id,
-          departureStop.stop_id,
-          undefined,
-          queryDate,
-          variant,
-          directionId
-        );
         
-        const uniqueSchedule = [];
-        const seenTripIds = new Set();
-        for (const schedule of recentSchedule) {
-          if (!seenTripIds.has(schedule.trip_id)) {
-            seenTripIds.add(schedule.trip_id);
-            uniqueSchedule.push(schedule);
+        const schedulePromises = tripIds.map(async (tripId) => {
+          const scheduleQuery = `
+            SELECT 
+              st.departure_time,
+              t.trip_headsign as destination
+            FROM stop_times st
+            JOIN trips t ON st.trip_id = t.trip_id
+            WHERE st.trip_id = ?
+              AND st.stop_id = ?
+              AND st.departure_time IS NOT NULL
+            LIMIT 1
+          `;
+          
+          const params: (string | number)[] = [tripId, departureStop.stop_id];
+          const result = await db.getFirstAsync<any>(scheduleQuery, params);
+          
+          if (result) {
+            return {
+              trip_id: tripId,
+              departure_time: result.departure_time,
+              destination: result.destination || 'Unknown',
+              stop_sequence: 0
+            };
           }
+          return null;
+        });
+        
+        const results = await Promise.all(schedulePromises);
+        let validResults = results.filter(r => r !== null) as ScheduleItem[];
+        validResults.sort((a, b) => a.departure_time - b.departure_time);
+        
+        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
+        if (isToday) {
+          validResults = validResults.filter(r => r.departure_time >= currentSeconds);
         }
         
-        setSchedule(uniqueSchedule);
-
-        let next = null;
-        if (!isToday) {
-          next = uniqueSchedule.length > 0 ? uniqueSchedule[0] : null;
-        } else {
-          next = await DatabaseService.getNextSchedule(
-            selectedRoute.route_id,
-            departureStop.stop_id,
-            undefined,
-            queryDate,
-            variant,
-            directionId
-          );
-        }
-        setNextSchedule(next);
+        setSchedule(validResults);
+        setNextSchedule(validResults.length > 0 ? validResults[0] : null);
+        
+        console.log(`Found ${validResults.length} schedules`);
       }
     } catch (error) {
       console.error('Failed to load schedule:', error);
@@ -387,8 +493,7 @@ export default function HomeScreen() {
         onPress: async () => {
           try {
             setLoading(true);
-            const goTransitService = GoTransitService;
-            await goTransitService.resetAndLoadNewDatabase();
+            await GoTransitService.resetAndLoadNewDatabase();
             await loadRoutesWithDirections();
             setSelectedRouteGroup(null);
             setSelectedDirection(null);
@@ -422,9 +527,7 @@ export default function HomeScreen() {
     value: rg.routeNumber,
   }));
 
-  const stopItems = stops
-    .sort((a, b) => a.stop_name.localeCompare(b.stop_name))
-    .map((s: Stop) => ({ label: s.stop_name, value: s.stop_id }));
+  const stopItems = stops.map((s: Stop) => ({ label: s.stop_name, value: s.stop_id }));
 
   const calculateWaitTime = (departureTime: number): string => {
     if (!departureTime && departureTime !== 0) return 'N/A';
@@ -438,16 +541,6 @@ export default function HomeScreen() {
     const hoursLeft = Math.floor(waitMinutes / 60);
     const minsLeft = waitMinutes % 60;
     return `${hoursLeft}h ${minsLeft}m`;
-  };
-
-  const debugAllRoutes = async (): Promise<void> => {
-    try {
-      const db = SQLite.openDatabaseSync('go_transit.db');
-      const routeCount = await db.getAllAsync<any>(`SELECT COUNT(DISTINCT route_id) as count FROM routes`);
-      Alert.alert('Database Stats', `Routes: ${routeCount[0]?.count || 0}\nRoute Groups: ${routeGroups.length}`);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to get database stats');
-    }
   };
 
   const renderSection = ({ item }: { item: any }) => item.component;
@@ -464,9 +557,6 @@ export default function HomeScreen() {
           <Text style={styles.title}>GO Transit Schedules</Text>
           <Text style={styles.subtitle}>Real-time Departures</Text>
           <View style={styles.headerButtons}>
-            <TouchableOpacity onPress={debugAllRoutes} style={styles.debugButton}>
-              <Text style={styles.debugButtonText}>📊 Stats</Text>
-            </TouchableOpacity>
             <TouchableOpacity onPress={resetDatabase} style={styles.resetButton}>
               <Text style={styles.resetButtonText}>🔄 Reset DB</Text>
             </TouchableOpacity>
@@ -543,6 +633,9 @@ export default function HomeScreen() {
               <Text style={styles.selectedDirectionText}>
                 {selectedDirection === 'inbound' ? '⬇️ To Union Station' : '⬆️ Away from Union Station'}
               </Text>
+              <Text style={styles.routeIdText}>
+                {selectedRoute.variant} - {selectedRoute.route_id}
+              </Text>
               <TouchableOpacity style={styles.changeDirectionButton} onPress={() => { 
                 setSelectedDirection(null); 
                 setSelectedRoute(null); 
@@ -591,9 +684,6 @@ export default function HomeScreen() {
               }}
               value={departureStop?.stop_id}
             />
-            {selectedDirection === 'outbound' && departureStop?.stop_name?.toLowerCase().includes('union') && (
-              <Text style={styles.defaultBadge}>✓ Default: Union Station</Text>
-            )}
           </View>
         ),
       });
@@ -612,9 +702,6 @@ export default function HomeScreen() {
               }}
               value={arrivalStop?.stop_id}
             />
-            {selectedDirection === 'inbound' && arrivalStop?.stop_name?.toLowerCase().includes('union') && (
-              <Text style={styles.defaultBadge}>✓ Default: Union Station</Text>
-            )}
           </View>
         ),
       });
@@ -780,6 +867,7 @@ const styles = StyleSheet.create({
   toggleButtonTextActive: { color: '#fff' },
   selectedDirectionIndicator: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#00A1E0', marginHorizontal: 15, marginTop: 5, padding: 12, borderRadius: 8 },
   selectedDirectionText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  routeIdText: { color: '#fff', fontSize: 12, opacity: 0.8 },
   changeDirectionButton: { backgroundColor: 'rgba(255,255,255,0.3)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   changeDirectionText: { color: '#fff', fontSize: 12, fontWeight: '600' },
   mapToggleContainer: { marginHorizontal: 15, marginTop: 5, marginBottom: 10 },

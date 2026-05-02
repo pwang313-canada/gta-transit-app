@@ -1,7 +1,7 @@
 // src/services/GoTransitService.ts
-import * as SQLite from 'expo-sqlite';
-import { File, Directory, Paths } from 'expo-file-system';
 import { Asset } from 'expo-asset';
+import { Directory, File, Paths } from 'expo-file-system';
+import * as SQLite from 'expo-sqlite';
 
 export interface Route {
   route_id: string;
@@ -366,13 +366,76 @@ class GoTransitService {
     }
   }
 
-  // Get all unique GO routes
-  async getRoutes(): Promise<Route[]> {
+  // PUBLIC METHOD: Check if a route is valid for a given date based on its date range
+// In GoTransitService.ts, update the isRouteValidForDate method:
+
+public isRouteValidForDate(routeId: string, date: Date): boolean {
+  console.log(`\n🔍 Checking route: ${routeId} for date: ${date.toDateString()}`);
+  
+  // Extract the date range from route_id if it follows MMDDMMDD pattern
+  // Route ID might be like "01260426-21", "04260626-21", "01011231-21A" etc.
+  const routeIdParts = routeId.split('-');
+  if (routeIdParts.length < 1) {
+    console.log(`   No dash found, assuming valid`);
+    return true;
+  }
+  
+  const dateRangePart = routeIdParts[0];
+  console.log(`   Date range part: ${dateRangePart}`);
+  
+  // Check if it has at least 8 digits (MMDDMMDD)
+  if (dateRangePart.length >= 8 && /^\d+$/.test(dateRangePart)) {
+    const startMMDD = dateRangePart.substring(0, 4);
+    const endMMDD = dateRangePart.substring(4, 8);
+    
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const currentMMDD = `${month}${day}`;
+    
+    console.log(`   Start: ${startMMDD}, End: ${endMMDD}, Current: ${currentMMDD}`);
+    
+    // Compare MMDD strings
+    if (startMMDD <= endMMDD) {
+      // Normal range (e.g., 0126 to 0426)
+      const isValid = currentMMDD >= startMMDD && currentMMDD <= endMMDD;
+      console.log(`   Normal range: ${isValid ? '✅ VALID' : '❌ INVALID'}`);
+      return isValid;
+    } else {
+      // Wrap-around range (e.g., 1125 to 0115 - Nov 25 to Jan 15)
+      const isValid = currentMMDD >= startMMDD || currentMMDD <= endMMDD;
+      console.log(`   Wrap-around: ${isValid ? '✅ VALID' : '❌ INVALID'}`);
+      return isValid;
+    }
+  }
+  
+  console.log(`   No valid date range pattern found, assuming valid`);
+  return true; // No date range pattern found
+}
+
+  // Get valid routes for a specific date
+  async getValidRoutesForDate(routes: Route[], date: Date): Promise<Route[]> {
+    const validRoutes = routes.filter(route => 
+      this.isRouteValidForDate(route.route_id, date)
+    );
+    
+    console.log(`\n========== VALID ROUTES FOR ${date.toDateString()} ==========`);
+    console.log(`Total routes: ${routes.length}`);
+    console.log(`Valid routes: ${validRoutes.length}`);
+    validRoutes.forEach(route => {
+      console.log(`  ✓ ${route.route_id} - ${route.route_short_name}`);
+    });
+    console.log('==========================================\n');
+    
+    return validRoutes;
+  }
+
+  // Get all unique GO routes (modified to return all routes including date-specific ones)
+  async getRoutes(includeAllVariants: boolean = true): Promise<Route[]> {
     if (!this.db) return [];
 
     try {
-      const result = await this.db.getAllAsync<Route>(
-        `SELECT 
+      let query = `
+        SELECT 
           route_id,
           route_short_name,
           route_long_name,
@@ -380,10 +443,15 @@ class GoTransitService {
         FROM routes 
         WHERE route_short_name IS NOT NULL
           AND route_short_name != ''
-        GROUP BY route_short_name
-        ORDER BY route_short_name`
-      );
-
+      `;
+      
+      if (!includeAllVariants) {
+        query += ` GROUP BY route_short_name`;
+      }
+      
+      query += ` ORDER BY route_short_name`;
+      
+      const result = await this.db.getAllAsync<Route>(query);
       return result || [];
     } catch (error) {
       console.error('Error getting routes:', error);
@@ -418,7 +486,7 @@ class GoTransitService {
     }
   }
 
-  // Get schedule for a route (simple version) - with integer time handling
+  // Get schedule for a route (simple version) - with date validation
   async getRecentSchedule(
     routeId: string,
     startStopId: string,
@@ -427,12 +495,22 @@ class GoTransitService {
   ): Promise<Departure[]> {
     if (!this.db) return [];
 
+    // First, check if the route is valid for this date
+    if (!this.isRouteValidForDate(routeId, date)) {
+      console.log(`❌ Route ${routeId} is not valid for date ${date.toDateString()}`);
+      return [];
+    }
+
     try {
+      // Format date to service_id (YYYYMMDD)
+      const serviceId = this.formatDateToServiceId(date);
+      
       // Get current time in seconds from midnight
       const currentSeconds = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
+      const isToday = date.toDateString() === new Date().toDateString();
 
-      const result = await this.db.getAllAsync<any>(
-        `SELECT 
+      let query = `
+        SELECT 
           t.trip_id,
           st.departure_time,
           st.arrival_time,
@@ -442,14 +520,23 @@ class GoTransitService {
         JOIN stop_times st ON t.trip_id = st.trip_id
         JOIN stops s ON st.stop_id = s.stop_id
         WHERE t.route_id = ?
+          AND t.service_id = ?
           AND s.stop_id = ?
-          AND st.departure_time > ?
           AND st.departure_time IS NOT NULL
-        GROUP BY t.trip_id, st.departure_time
+      `;
+      
+      const params: any[] = [routeId, serviceId, startStopId];
+      
+      if (isToday) {
+        query += ` AND st.departure_time > ?`;
+        params.push(currentSeconds);
+      }
+      
+      query += ` GROUP BY t.trip_id, st.departure_time
         ORDER BY st.departure_time
-        LIMIT 30`,
-        [routeId, startStopId, currentSeconds]
-      );
+        LIMIT 30`;
+
+      const result = await this.db.getAllAsync<any>(query, params);
 
       const uniqueDepartures = new Map<string, Departure>();
       for (const item of result || []) {
@@ -457,10 +544,10 @@ class GoTransitService {
         if (!uniqueDepartures.has(key)) {
           uniqueDepartures.set(key, {
             trip_id: item.trip_id,
-            departure_time: item.departure_time, // Keep as integer (seconds from midnight)
+            departure_time: item.departure_time,
             stop_name: item.stop_name,
             headsign: item.headsign || 'Unknown',
-            arrival_time: item.arrival_time, // Keep as integer (seconds from midnight)
+            arrival_time: item.arrival_time,
           });
         }
       }
@@ -472,7 +559,7 @@ class GoTransitService {
     }
   }
 
-  // Get schedule with arrival times between two stops - with integer time handling
+  // Get schedule with arrival times between two stops - with date validation
   async getScheduleWithArrival(
     routeId: string,
     startStopId: string,
@@ -481,12 +568,22 @@ class GoTransitService {
   ): Promise<TripWithArrival[]> {
     if (!this.db) return [];
 
+    // First, check if the route is valid for this date
+    if (!this.isRouteValidForDate(routeId, date)) {
+      console.log(`❌ Route ${routeId} is not valid for date ${date.toDateString()}`);
+      return [];
+    }
+
     try {
+      // Format date to service_id (YYYYMMDD)
+      const serviceId = this.formatDateToServiceId(date);
+      
       // Get current time in seconds from midnight
       const currentSeconds = date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds();
+      const isToday = date.toDateString() === new Date().toDateString();
 
-      const result = await this.db.getAllAsync<any>(
-        `SELECT 
+      let query = `
+        SELECT 
           t.trip_id,
           st_start.departure_time,
           st_end.arrival_time,
@@ -498,26 +595,35 @@ class GoTransitService {
         JOIN stop_times st_start ON t.trip_id = st_start.trip_id
         JOIN stop_times st_end ON t.trip_id = st_end.trip_id
         WHERE t.route_id = ?
+          AND t.service_id = ?
           AND st_start.stop_id = ?
           AND st_end.stop_id = ?
-          AND st_start.departure_time > ?
           AND st_start.stop_sequence < st_end.stop_sequence
           AND st_start.departure_time IS NOT NULL
           AND st_end.arrival_time IS NOT NULL
-        GROUP BY t.trip_id
+      `;
+      
+      const params: any[] = [routeId, serviceId, startStopId, endStopId];
+      
+      if (isToday) {
+        query += ` AND st_start.departure_time > ?`;
+        params.push(currentSeconds);
+      }
+      
+      query += ` GROUP BY t.trip_id
         ORDER BY st_start.departure_time
-        LIMIT 30`,
-        [routeId, startStopId, endStopId, currentSeconds]
-      );
+        LIMIT 30`;
+
+      const result = await this.db.getAllAsync<any>(query, params);
 
       return (result || []).map((item: any) => ({
         trip_id: item.trip_id,
-        departure_time: item.departure_time, // Keep as integer (seconds from midnight)
-        arrival_time: item.arrival_time, // Keep as integer (seconds from midnight)
+        departure_time: item.departure_time,
+        arrival_time: item.arrival_time,
         destination: item.destination,
         departure_stop: item.departure_stop,
         arrival_stop: item.arrival_stop,
-        travel_time_minutes: item.travel_time_minutes
+        travel_time_minutes: Math.round(item.travel_time_minutes)
       }));
     } catch (error) {
       console.error('Error getting schedule with arrival:', error);
@@ -525,7 +631,7 @@ class GoTransitService {
     }
   }
 
-  // Get next schedule with arrival time
+  // Get next schedule with arrival time - with date validation
   async getNextScheduleWithArrival(
     routeId: string,
     startStopId: string,
@@ -536,7 +642,7 @@ class GoTransitService {
     return schedules.length > 0 ? schedules[0] : null;
   }
 
-  // Get next schedule (simple version)
+  // Get next schedule (simple version) - with date validation
   async getNextSchedule(
     routeId: string,
     startStopId: string,
@@ -545,6 +651,14 @@ class GoTransitService {
   ): Promise<Departure | null> {
     const schedules = await this.getRecentSchedule(routeId, startStopId, endStopId, date);
     return schedules.length > 0 ? schedules[0] : null;
+  }
+
+  // Helper method to format date to service_id (YYYYMMDD)
+  private formatDateToServiceId(date: Date): string {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}${month}${day}`;
   }
 
   // Close database connection
