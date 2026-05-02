@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "GTA Transit",
+    "slug": "gta-transit-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#00A1E0"
+    },
+    "assetBundlePatterns": [
+      "assets/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gtatransit.app",
+      "buildNumber": "1.0.0",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "This app needs location access to show nearby transit stations and your position on the map",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs location access to show nearby transit stations and your position on the map"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#00A1E0"
+      },
+      "package": "com.gtatransit.app",
+      "versionCode": 1,
+      "permissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "newArchEnabled": true,
+    "experiments": {
+      "tsconfigPaths": true
+    },
+    "plugins": [
+      "expo-build-properties",
+      "expo-sqlite",
+      "expo-asset",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow GTA Transit to use your location to show nearby stops and your position on the route map.",
+          "locationWhenInUsePermission": "Allow GTA Transit to use your location to show nearby stops and your position on the route map."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "your-project-id"
+      }
+    }
+  }
+}
