@@ -238,7 +238,7 @@ export default function HomeScreen() {
     ) || null;
   };
 
-  const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise<void> => {
+const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise<void> => {
     if (!selectedRouteGroup) return;
 
     setSelectedDirection(direction);
@@ -253,33 +253,50 @@ export default function HomeScreen() {
     try {
       const serviceId = formatDate(selectedDate).replace(/-/g, '');
       
-      // For trains, use the route short name directly (e.g., "MI")
-      // For buses, get the base number (e.g., "21" from "21B")
-      const routeNumber = selectedRouteGroup.isBus 
-        ? (selectedRouteGroup.routeNumber.match(/\d+/)?.[0] || selectedRouteGroup.routeNumber)
-        : selectedRouteGroup.routeNumber;
+      // Get base route number and variant
+      const routeNumberMatch = selectedRouteGroup.routeNumber.match(/^(\d+)([A-Z]*)$/);
+      const baseRouteNumber = routeNumberMatch ? routeNumberMatch[1] : selectedRouteGroup.routeNumber;
+      const routeLetter = routeNumberMatch ? routeNumberMatch[2] : '';
       
-      console.log(`\n🔍 Looking for routes: ${routeNumber}, service: ${serviceId}, direction: ${direction === 'inbound' ? 1 : 0}`);
+      console.log(`\n🔍 Looking for routes: base=${baseRouteNumber}, letter=${routeLetter}, service=${serviceId}, direction=${direction}`);
       
-      // Find routes with matching route_short_name, ordered by route_id DESC (most recent first)
-      const routeQuery = `
-        SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
-        FROM routes r
-        INNER JOIN trips t ON r.route_id = t.route_id
-        WHERE r.route_short_name = ?
-          AND t.service_id = ?
-          AND t.direction_id = ?
-        ORDER BY r.route_id DESC
-      `;
+      let routeQuery: string;
+      let queryParams: (string | number)[];
       
-      const queryParams: (string | number)[] = [routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+      if (selectedRouteGroup.isBus && routeLetter) {
+        // For bus with letter variant (e.g., "21C"), search by route_short_name = base number AND route_variant = full variant
+        routeQuery = `
+          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
+          FROM routes r
+          INNER JOIN trips t ON r.route_id = t.route_id
+          WHERE r.route_short_name = ?
+            AND t.route_variant = ?
+            AND t.service_id = ?
+            AND t.direction_id = ?
+          ORDER BY r.route_id DESC
+        `;
+        queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+      } else {
+        // For trains or buses without letter, search by route_short_name only
+        routeQuery = `
+          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
+          FROM routes r
+          INNER JOIN trips t ON r.route_id = t.route_id
+          WHERE r.route_short_name = ?
+            AND t.service_id = ?
+            AND t.direction_id = ?
+          ORDER BY r.route_id DESC
+        `;
+        queryParams = [baseRouteNumber, serviceId, direction === 'inbound' ? 1 : 0];
+      }
+      
       const availableRoutes = await dbService.executeCustomQuery<any>(routeQuery, queryParams);
       
       console.log(`Found ${availableRoutes.length} routes`);
-      availableRoutes.forEach(r => console.log(`  - ${r.route_id}`));
       
       if (availableRoutes.length === 0) {
-        Alert.alert('No Routes', `No routes available for ${selectedRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
+        Alert.alert('No Service', `No ${direction} service for ${selectedRouteGroup.routeNumber} on ${selectedDate.toDateString()}`);
+        setSelectedDirection(null);
         return;
       }
       
