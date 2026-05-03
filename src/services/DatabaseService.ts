@@ -105,8 +105,7 @@ class DatabaseService {
   }
 
   // Helper method to map direction names to direction_id values
-  // FIXED: Reversed the direction logic
-  // For routes like Milton (MI): Inbound = toward Union (direction_id = 1), Outbound = away from Union (direction_id = 0)
+  // CORRECTED: Inbound = toward Union Station (direction_id = 1), Outbound = away from Union Station (direction_id = 0)
   private getDirectionId(direction: string): number | undefined {
     if (!direction) return undefined;
     
@@ -114,9 +113,9 @@ class DatabaseService {
     
     switch (directionLower) {
       case 'inbound':
-        return 1; // Towards Union Station (last stop)
+        return 1; // Towards Union Station
       case 'outbound':
-        return 0; // Away from Union Station (towards first stop)
+        return 0; // Away from Union Station
       default:
         return undefined;
     }

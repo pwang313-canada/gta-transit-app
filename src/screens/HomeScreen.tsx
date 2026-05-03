@@ -311,7 +311,7 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
       route_id: selectedRouteData.route_id,
       route_short_name: selectedRouteData.route_short_name,
       route_long_name: selectedRouteData.route_long_name,
-      direction_id: direction === 'inbound' ? 0 : 1,
+      direction_id: direction === 'inbound' ? 1 : 0,
       variant: selectedRouteGroup.variant
     };
     
@@ -403,7 +403,7 @@ const loadRecentSchedule = async (): Promise<void> => {
     console.log(`Route ID: ${selectedRoute.route_id}`);
     console.log(`Variant: ${selectedRoute.variant || 'none'}`);
     console.log(`Service ID: ${serviceId}`);
-    console.log(`Direction: ${selectedRoute.direction_id === 0 ? 'Inbound' : 'Outbound'}`);
+    console.log(`Direction: ${selectedRoute.direction_id === 1 ? 'Inbound' : 'Outbound'}`);
     console.log(`Departure Stop: ${departureStop.stop_id}`);
     console.log(`Arrival Stop: ${arrivalStop?.stop_id || 'none'}`);
     
