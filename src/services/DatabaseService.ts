@@ -386,60 +386,85 @@ async getShapeForRoute(routeId: string | number, date?: Date, variant?: string):
       console.log('\n========== GET SHAPE FOR ROUTE ==========');
       console.log(`Route ID: "${routeIdStr}"`);
       
-      const queryDate = date || new Date();
-      const serviceId = this.formatDateToServiceId(queryDate);
-      
-      // Get shape_id from a sample trip for this route
+      // Don't filter by service_id - shapes are the same regardless of date
+      // Just get the shape from any trip for this route
       let tripQuery = `
         SELECT DISTINCT t.shape_id
         FROM trips t
         WHERE t.route_id = ?
-          AND t.service_id = ?
+          AND t.shape_id IS NOT NULL
+          AND t.shape_id != ''
       `;
       
-      const tripParams: any[] = [routeIdStr, serviceId];
-      
-      if (variant && typeof variant === 'string' && variant.trim() !== '' && variant !== 'none') {
-        tripQuery += ` AND t.route_variant = ?`;
-        tripParams.push(variant.trim());
-      }
+      const tripParams: any[] = [routeIdStr];
       
       tripQuery += ` LIMIT 1`;
+      
+      console.log(`Shape query: ${tripQuery}`);
+      console.log(`Params: ${JSON.stringify(tripParams)}`);
       
       const tripResult = await db.getAllAsync<any>(tripQuery, tripParams);
       
       if (tripResult.length === 0 || !tripResult[0].shape_id) {
-        console.log('❌ No shape found for this route');
-        return [];
+        console.log('❌ No shape found for this route, trying by route_short_name...');
+        
+        // Try finding shape by route_short_name for trains
+        const shortNameQuery = `
+          SELECT DISTINCT t.shape_id
+          FROM trips t
+          INNER JOIN routes r ON t.route_id = r.route_id
+          WHERE r.route_short_name = (
+            SELECT r2.route_short_name FROM routes r2 WHERE r2.route_id = ?
+          )
+          AND t.shape_id IS NOT NULL
+          AND t.shape_id != ''
+          LIMIT 1
+        `;
+        
+        const shortNameResult = await db.getAllAsync<any>(shortNameQuery, [routeIdStr]);
+        
+        if (shortNameResult.length === 0 || !shortNameResult[0].shape_id) {
+          console.log('❌ Still no shape found');
+          return [];
+        }
+        
+        console.log(`✅ Found shape by route_short_name: ${shortNameResult[0].shape_id}`);
+        return await this.getShapePoints(shortNameResult[0].shape_id);
       }
       
       const shapeId = tripResult[0].shape_id;
-      console.log(`Found shape_id: ${shapeId}`);
+      console.log(`✅ Found shape_id: ${shapeId}`);
       
-      // Get shape points ordered by sequence
-      const shapeQuery = `
-        SELECT 
-          shape_pt_lat as latitude,
-          shape_pt_lon as longitude,
-          shape_pt_sequence
-        FROM shapes
-        WHERE shape_id = ?
-        ORDER BY shape_pt_sequence ASC
-      `;
-      
-      const shapePoints = await db.getAllAsync<any>(shapeQuery, [shapeId]);
-      
-      console.log(`✅ Loaded ${shapePoints.length} shape points`);
-      
-      return shapePoints.map(point => ({
-        latitude: point.latitude,
-        longitude: point.longitude,
-      }));
+      return await this.getShapePoints(shapeId);
       
     } catch (error) {
       console.error('❌ Error fetching shape for route:', error);
       return [];
     }
+  }
+
+// Add this helper method for getting shape points
+private async getShapePoints(shapeId: string): Promise<Array<{latitude: number, longitude: number}>> {
+    const db = await this.getDatabase();
+    
+    const shapeQuery = `
+      SELECT 
+        shape_pt_lat as latitude,
+        shape_pt_lon as longitude,
+        shape_pt_sequence
+      FROM shapes
+      WHERE shape_id = ?
+      ORDER BY shape_pt_sequence ASC
+    `;
+    
+    const shapePoints = await db.getAllAsync<any>(shapeQuery, [shapeId]);
+    
+    console.log(`✅ Loaded ${shapePoints.length} shape points for shape_id: ${shapeId}`);
+    
+    return shapePoints.map((point: any) => ({
+      latitude: point.latitude,
+      longitude: point.longitude,
+    }));
   }
 }
 

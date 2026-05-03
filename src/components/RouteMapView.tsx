@@ -44,13 +44,13 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       
       console.log('Loading route geometry...');
       console.log('Route ID:', routeId);
-      console.log('Date:', date);
+      console.log('Date:', date.toDateString());
       console.log('Variant:', variant);
       
-      // Load stops and shape data in parallel
+      // Load stops (date-dependent) and shape (not date-dependent) in parallel
       const [stopsList, shapeData] = await Promise.all([
         dbService.getStopsByRoute(routeId, variant || undefined, date),
-        dbService.getShapeForRoute(routeId, date, variant || undefined)
+        dbService.getShapeForRoute(routeId)  // Don't pass date - shapes are the same
       ]);
       
       // Set shape coordinates
