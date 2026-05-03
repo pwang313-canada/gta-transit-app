@@ -736,6 +736,7 @@ export default function HomeScreen() {
                 routeId={selectedRoute.route_id}
                 routeShortName={selectedRoute.route_short_name}
                 variant={selectedRouteGroup?.variant}
+                selectedDate={selectedDate}
                 visible={showMap}
                 onClose={() => setShowMap(false)}
                 onSelectStop={handleMapStopSelect}

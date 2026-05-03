@@ -8,6 +8,7 @@ interface RouteMapViewProps {
   routeId: string;
   routeShortName: string;
   variant?: string;
+  selectedDate?: Date; // Add selected date prop
   visible: boolean;
   onClose: () => void;
   onSelectStop: (stop: any, type: 'departure' | 'arrival') => void;
@@ -17,6 +18,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
   routeId,
   routeShortName,
   variant,
+  selectedDate,
   visible,
   onClose,
   onSelectStop,
@@ -29,36 +31,61 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     if (visible && routeId) {
       loadRouteGeometry();
     }
-  }, [visible, routeId, variant]);
+  }, [visible, routeId, variant, selectedDate]);
 
-  const loadRouteGeometry = async () => {
+const loadRouteGeometry = async () => {
     try {
       setLoading(true);
       setError(null);
       
       const dbService = DatabaseService;
+      const date = selectedDate;
       
-      // Get stops for this route
-      const currentDate = new Date();
+      console.log('Loading route geometry...');
+      console.log('Route ID:', routeId);
+      console.log('Date:', date);
+      console.log('Variant:', variant);
+      
+      // FIX: Match the working pattern from your first log
+      // The working call was: getStopsByRoute(routeId, variant, date)
+      // Keep the same parameter order that was working before
       const stopsList = await dbService.getStopsByRoute(
         routeId,
-        variant || '',
-        currentDate
+        variant || 'none',  // Pass variant or 'none' like the working call
+        date                 // Pass date as the third parameter
       );
       
       if (stopsList && stopsList.length > 0) {
         setStops(stopsList);
-        console.log(`Loaded ${stopsList.length} stops for route ${routeId}`);
+        console.log(`✅ Loaded ${stopsList.length} stops for route ${routeId}`);
       } else {
-        setError('No stops found for this route');
+        console.log('❌ No stops found');
+        setError('No stops found for this route on selected date');
       }
     } catch (err) {
       console.error('Error loading route geometry:', err);
       setError('Failed to load route stops');
-      Alert.alert('Error', 'Failed to load route stops. Please try again.');
     } finally {
       setLoading(false);
     }
+  };
+
+  // Get coordinates for each stop (you'll need to add these to your stops table or use geocoding)
+  const getStopCoordinates = (stop: any) => {
+    // If your stops have lat/lng in the database, use those
+    if (stop.stop_lat && stop.stop_lon) {
+      return {
+        latitude: stop.stop_lat,
+        longitude: stop.stop_lon,
+      };
+    }
+    
+    // Otherwise, you might need to add coordinates to your stops table
+    // For now, returning a default (you should add stop_lat and stop_lon to your stops table)
+    return {
+      latitude: 43.645,
+      longitude: -79.38,
+    };
   };
 
   if (!visible) return null;
@@ -97,18 +124,21 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     );
   }
 
-  // Calculate initial region based on first stop
+  // Calculate initial region based on first stop with coordinates
+  const firstStopCoords = getStopCoordinates(stops[0]);
   const initialRegion = {
-    latitude: 43.645, // Default to Toronto
-    longitude: -79.38,
-    latitudeDelta: 0.5,
-    longitudeDelta: 0.5,
+    latitude: firstStopCoords.latitude,
+    longitude: firstStopCoords.longitude,
+    latitudeDelta: 0.1,
+    longitudeDelta: 0.1,
   };
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Route {routeShortName} {variant && `(${variant})`}</Text>
+        <Text style={styles.title}>
+          Route {routeShortName} {variant ? `(${variant})` : ''}
+        </Text>
         <TouchableOpacity onPress={onClose} style={styles.closeButton}>
           <Text style={styles.closeButtonText}>✕</Text>
         </TouchableOpacity>
@@ -118,22 +148,44 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
         style={styles.map}
         initialRegion={initialRegion}
       >
-        {stops.map((stop, index) => (
-          <Marker
-            key={stop.stop_id}
-            coordinate={{
-              latitude: stop.stop_lat || 43.645,
-              longitude: stop.stop_lon || -79.38,
-            }}
-            title={stop.stop_name}
-            description={`Stop ${index + 1}`}
-            onPress={() => onSelectStop(stop, 'departure')}
-          />
-        ))}
+        {stops.map((stop, index) => {
+          const coords = getStopCoordinates(stop);
+          return (
+            <Marker
+              key={stop.stop_id}
+              coordinate={coords}
+              title={stop.stop_name}
+              description={`Stop ${index + 1}`}
+              onPress={() => {
+                // Show alert to choose departure or arrival
+                Alert.alert(
+                  stop.stop_name,
+                  'Select stop type:',
+                  [
+                    {
+                      text: 'Set as Departure',
+                      onPress: () => onSelectStop(stop, 'departure'),
+                    },
+                    {
+                      text: 'Set as Arrival',
+                      onPress: () => onSelectStop(stop, 'arrival'),
+                    },
+                    {
+                      text: 'Cancel',
+                      style: 'cancel',
+                    },
+                  ]
+                );
+              }}
+            />
+          );
+        })}
       </MapView>
       
       <View style={styles.legend}>
-        <Text style={styles.legendText}>{stops.length} stops on this route</Text>
+        <Text style={styles.legendText}>
+          {stops.length} stops on this route • Tap a stop to select
+        </Text>
       </View>
     </View>
   );
@@ -184,6 +236,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#f5f5f5',
+    borderRadius: 12,
+    marginVertical: 10,
   },
   loadingText: {
     marginTop: 10,
@@ -195,6 +249,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#f5f5f5',
     padding: 20,
+    borderRadius: 12,
+    marginVertical: 10,
   },
   errorText: {
     color: 'red',
