@@ -1,6 +1,5 @@
-// src/screens/HomeScreen.tsx - Complete fixed version with trains
+// src/screens/HomeScreen.tsx - Complete version using only DatabaseService
 import DateTimePicker from '@react-native-community/datetimepicker';
-import * as SQLite from 'expo-sqlite';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -16,7 +15,6 @@ import {
 import RouteMapView from '../components/RouteMapView';
 import SearchablePicker from '../components/SearchableRoutePicker';
 import DatabaseService from '../services/DatabaseService';
-import GoTransitService from '../services/GoTransitService';
 
 interface Route {
   route_id: string;
@@ -88,6 +86,7 @@ export default function HomeScreen() {
   const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
 
   const flatListRef = useRef<FlatList>(null);
+  const dbService = DatabaseService;
 
   useEffect(() => {
     // Reset all schedule-related state when route group changes
@@ -104,6 +103,8 @@ export default function HomeScreen() {
 
   useEffect(() => {
     loadRoutesWithDirections();
+    // Initialize database
+    dbService.initializeDatabase();
   }, []);
 
   useEffect(() => {
@@ -118,10 +119,9 @@ export default function HomeScreen() {
   const loadRoutesWithDirections = async (): Promise<void> => {
     try {
       setLoading(true);
-      const db = SQLite.openDatabaseSync('go_transit.db');
-
+      
       // Get all bus variants (routes that have route_variant different from route_short_name)
-      const busVariants = await db.getAllAsync<any>(`
+      const busVariants = await dbService.executeCustomQuery<any>(`
         SELECT DISTINCT 
           r.route_short_name,
           r.route_long_name,
@@ -148,7 +148,7 @@ export default function HomeScreen() {
       });
 
       // Get all train routes (routes without variants)
-      const trainRoutes = await db.getAllAsync<any>(`
+      const trainRoutes = await dbService.executeCustomQuery<any>(`
         SELECT DISTINCT 
           r.route_short_name,
           r.route_long_name
@@ -216,20 +216,19 @@ export default function HomeScreen() {
     }
   };
 
-const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
-  // Clear all state first
-  setSelectedRouteGroup(routeGroup);
-  setSelectedDirection(null);
-  setSelectedRoute(null);
-  setDepartureStop(null);
-  setArrivalStop(null);
-  setSchedule([]);
-  setSchedulesWithArrival([]);
-  setNextSchedule(null);
-  setShowArrivalTime(false);
-  setShowMap(false);
-  setStops([]);
-};
+  const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
+    setSelectedRouteGroup(routeGroup);
+    setSelectedDirection(null);
+    setSelectedRoute(null);
+    setDepartureStop(null);
+    setArrivalStop(null);
+    setSchedule([]);
+    setSchedulesWithArrival([]);
+    setNextSchedule(null);
+    setShowArrivalTime(false);
+    setShowMap(false);
+    setStops([]);
+  };
 
   const findUnionStation = (stopsList: Stop[]): Stop | null => {
     return stopsList.find(stop => 
@@ -239,133 +238,128 @@ const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
     ) || null;
   };
 
-const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise<void> => {
-  if (!selectedRouteGroup) return;
+  const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise<void> => {
+    if (!selectedRouteGroup) return;
 
-  setSelectedDirection(direction);
-  setSelectedRoute(null);
-  setSchedule([]);
-  setSchedulesWithArrival([]);
-  setNextSchedule(null);
-  setShowArrivalTime(false);
-  setShowMap(false);
-  setStops([]);
+    setSelectedDirection(direction);
+    setSelectedRoute(null);
+    setSchedule([]);
+    setSchedulesWithArrival([]);
+    setNextSchedule(null);
+    setShowArrivalTime(false);
+    setShowMap(false);
+    setStops([]);
 
-  try {
-    const serviceId = formatDate(selectedDate).replace(/-/g, '');
-    const db = SQLite.openDatabaseSync('go_transit.db');
-    
-    // For trains, use the route short name directly (e.g., "MI")
-    // For buses, get the base number (e.g., "21" from "21B")
-    const routeNumber = selectedRouteGroup.isBus 
-      ? (selectedRouteGroup.routeNumber.match(/\d+/)?.[0] || selectedRouteGroup.routeNumber)
-      : selectedRouteGroup.routeNumber;
-    
-    console.log(`\n🔍 Looking for routes: ${routeNumber}, service: ${serviceId}, direction: ${direction === 'inbound' ? 1 : 0}`);
-    
-    // Find routes with matching route_short_name, ordered by route_id DESC (most recent first)
-    const routeQuery = `
-      SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
-      FROM routes r
-      INNER JOIN trips t ON r.route_id = t.route_id
-      WHERE r.route_short_name = ?
-        AND t.service_id = ?
-        AND t.direction_id = ?
-      ORDER BY r.route_id DESC
-    `;
-    
-    const queryParams: (string | number)[] = [routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
-    const availableRoutes = await db.getAllAsync<any>(routeQuery, queryParams);
-    
-    console.log(`Found ${availableRoutes.length} routes`);
-    availableRoutes.forEach(r => console.log(`  - ${r.route_id}`));
-    
-    if (availableRoutes.length === 0) {
-      Alert.alert('No Routes', `No routes available for ${selectedRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
-      return;
-    }
-    
-    // Find which route is valid for this date (for buses with date ranges)
-    let selectedRouteData = null;
-    if (selectedRouteGroup.isBus) {
-      for (const route of availableRoutes) {
-        const isValid = GoTransitService.isRouteValidForDate(route.route_id, selectedDate);
-        console.log(`  ${route.route_id}: ${isValid ? 'VALID' : 'INVALID'}`);
-        if (isValid) {
-          selectedRouteData = route;
-          break;
-        }
+    try {
+      const serviceId = formatDate(selectedDate).replace(/-/g, '');
+      
+      // For trains, use the route short name directly (e.g., "MI")
+      // For buses, get the base number (e.g., "21" from "21B")
+      const routeNumber = selectedRouteGroup.isBus 
+        ? (selectedRouteGroup.routeNumber.match(/\d+/)?.[0] || selectedRouteGroup.routeNumber)
+        : selectedRouteGroup.routeNumber;
+      
+      console.log(`\n🔍 Looking for routes: ${routeNumber}, service: ${serviceId}, direction: ${direction === 'inbound' ? 1 : 0}`);
+      
+      // Find routes with matching route_short_name, ordered by route_id DESC (most recent first)
+      const routeQuery = `
+        SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
+        FROM routes r
+        INNER JOIN trips t ON r.route_id = t.route_id
+        WHERE r.route_short_name = ?
+          AND t.service_id = ?
+          AND t.direction_id = ?
+        ORDER BY r.route_id DESC
+      `;
+      
+      const queryParams: (string | number)[] = [routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+      const availableRoutes = await dbService.executeCustomQuery<any>(routeQuery, queryParams);
+      
+      console.log(`Found ${availableRoutes.length} routes`);
+      availableRoutes.forEach(r => console.log(`  - ${r.route_id}`));
+      
+      if (availableRoutes.length === 0) {
+        Alert.alert('No Routes', `No routes available for ${selectedRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
+        return;
       }
-    } else {
-      // For trains, take the first one (most recent)
-      selectedRouteData = availableRoutes[0];
-      console.log(`  Selected train route: ${selectedRouteData.route_id}`);
+      
+      // Find which route is valid for this date (for buses with date ranges)
+      let selectedRouteData = null;
+      if (selectedRouteGroup.isBus) {
+        for (const route of availableRoutes) {
+          const isValid = dbService.isRouteValidForDate(route.route_id, selectedDate);
+          console.log(`  ${route.route_id}: ${isValid ? 'VALID' : 'INVALID'}`);
+          if (isValid) {
+            selectedRouteData = route;
+            break;
+          }
+        }
+      } else {
+        // For trains, take the first one (most recent)
+        selectedRouteData = availableRoutes[0];
+        console.log(`  Selected train route: ${selectedRouteData.route_id}`);
+      }
+      
+      if (!selectedRouteData) {
+        Alert.alert('No Valid Route', `No valid route found for ${selectedRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
+        return;
+      }
+      
+      const selectedRouteObj = {
+        route_id: selectedRouteData.route_id,
+        route_short_name: selectedRouteData.route_short_name,
+        route_long_name: selectedRouteData.route_long_name,
+        direction_id: direction === 'inbound' ? 1 : 0,
+        variant: selectedRouteGroup.variant
+      };
+      
+      setSelectedRoute(selectedRouteObj);
+      
+      // Load stops for this route
+      let variantParam: string = '';
+      if (selectedRouteGroup.isBus && selectedRouteGroup.variant) {
+        variantParam = selectedRouteGroup.variant;
+      }
+      console.log(`Loading stops for route: ${selectedRouteData.route_id}, variant: ${variantParam || 'none'}`);
+      
+      const stopsList = await dbService.getStopsByRoute(
+        selectedRouteData.route_id, 
+        variantParam,
+        selectedDate
+      );
+      
+      console.log(`Found ${stopsList.length} stops`);
+      
+      const typedStops: Stop[] = stopsList.map((stop: any) => ({
+        stop_id: stop.stop_id,
+        stop_name: stop.stop_name,
+      }));
+      setStops(typedStops);
+      
+      // Find Union Station
+      const unionStop = findUnionStation(typedStops);
+      
+      // For inbound: depart from somewhere, arrive at Union
+      // For outbound: depart from Union, arrive somewhere
+      if (direction === 'inbound') {
+        setArrivalStop(unionStop || null);
+        setDepartureStop(null);
+        console.log(`Inbound: Arrival set to Union Station (${unionStop?.stop_name || 'not found'})`);
+      } else {
+        setDepartureStop(unionStop || null);
+        setArrivalStop(null);
+        console.log(`Outbound: Departure set to Union Station (${unionStop?.stop_name || 'not found'})`);
+      }
+      
+      if (typedStops.length === 0) {
+        Alert.alert('No Stops', `No stops found for ${selectedRouteGroup.routeNumber} on this date.`);
+      }
+      
+    } catch (error) {
+      console.error('Failed to load stops:', error);
+      Alert.alert('Error', 'Failed to load stops. Please try again.');
     }
-    
-    if (!selectedRouteData) {
-      Alert.alert('No Valid Route', `No valid route found for ${selectedRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
-      return;
-    }
-    
-    const selectedRouteObj = {
-      route_id: selectedRouteData.route_id,
-      route_short_name: selectedRouteData.route_short_name,
-      route_long_name: selectedRouteData.route_long_name,
-      direction_id: direction === 'inbound' ? 1 : 0,
-      variant: selectedRouteGroup.variant
-    };
-    
-    setSelectedRoute(selectedRouteObj);
-    
-    // Load stops for this route
-let variantParam: string;
-if (selectedRouteGroup.isBus && selectedRouteGroup.variant) {
-  variantParam = selectedRouteGroup.variant;
-} else {
-  variantParam = ''; // Empty string for non-bus routes or when variant is undefined
-}
-console.log(`Loading stops for route: ${selectedRouteData.route_id}, variant: ${variantParam || 'none'}`);
-
-const stopsList = await DatabaseService.getStopsByRoute(
-  selectedRouteData.route_id, 
-  variantParam,
-  selectedDate
-);
-    
-    console.log(`Found ${stopsList.length} stops`);
-    
-    const typedStops: Stop[] = stopsList.map((stop: any) => ({
-      stop_id: stop.stop_id,
-      stop_name: stop.stop_name,
-    }));
-    setStops(typedStops);
-    
-    // Find Union Station
-    const unionStop = findUnionStation(typedStops);
-    
-    // For inbound: depart from somewhere, arrive at Union
-    // For outbound: depart from Union, arrive somewhere
-    if (direction === 'inbound') {
-      // Arrival is Union Station (last stop)
-      setArrivalStop(unionStop || null);
-      setDepartureStop(null);
-      console.log(`Inbound: Arrival set to Union Station (${unionStop?.stop_name || 'not found'})`);
-    } else {
-      // Departure is Union Station (first stop in outbound)
-      setDepartureStop(unionStop || null);
-      setArrivalStop(null);
-      console.log(`Outbound: Departure set to Union Station (${unionStop?.stop_name || 'not found'})`);
-    }
-    
-    if (typedStops.length === 0) {
-      Alert.alert('No Stops', `No stops found for ${selectedRouteGroup.routeNumber} on this date.`);
-    }
-    
-  } catch (error) {
-    console.error('Failed to load stops:', error);
-    Alert.alert('Error', 'Failed to load stops. Please try again.');
-  }
-};
+  };
 
   const handleMapStopSelect = (stop: any, type: 'departure' | 'arrival') => {
     if (type === 'departure') {
@@ -392,282 +386,217 @@ const stopsList = await DatabaseService.getStopsByRoute(
     }
   };
 
-const loadRecentSchedule = async (): Promise<void> => {
-  if (!selectedRoute || !departureStop) return;
+  const loadRecentSchedule = async (): Promise<void> => {
+    if (!selectedRoute || !departureStop) return;
 
-  setLoadingSchedule(true);
-  try {
-    const queryDate = selectedDate;
-    const today = new Date();
-    const isToday = queryDate.toDateString() === today.toDateString();
-    const serviceId = formatDate(queryDate).replace(/-/g, '');
-    const db = SQLite.openDatabaseSync('go_transit.db');
-    
-    console.log(`\n${'='.repeat(60)}`);
-    console.log(`LOADING SCHEDULE`);
-    console.log(`${'='.repeat(60)}`);
-    console.log(`Route ID: ${selectedRoute.route_id}`);
-    console.log(`Variant: ${selectedRoute.variant || 'none'}`);
-    console.log(`Service ID: ${serviceId}`);
-    console.log(`Direction: ${selectedRoute.direction_id === 1 ? 'Inbound' : 'Outbound'}`);
-    console.log(`Departure Stop: ${departureStop.stop_id}`);
-    console.log(`Arrival Stop: ${arrivalStop?.stop_id || 'none'}`);
-    
-    // Log SQL query for trips
-    let tripsQuery = `
-      SELECT trip_id, route_variant, direction_id
-      FROM trips 
-      WHERE route_id = ? 
-        AND service_id = ?
-        AND direction_id = ?
-    `;
-    
-    const queryParams: (string | number)[] = [
-      selectedRoute.route_id, 
-      serviceId, 
-      selectedRoute.direction_id !== undefined ? selectedRoute.direction_id : 0
-    ];
-    
-    if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
-      tripsQuery += ` AND route_variant = ?`;
-      queryParams.push(selectedRoute.variant);
-    }
-    
-    console.log(`\n🔍 SQL QUERY 1 (Find Trips):`);
-    console.log(tripsQuery);
-    console.log(`Parameters:`, queryParams);
-    
-    const trips = await db.getAllAsync<any>(tripsQuery, queryParams);
-    console.log(`✅ Found ${trips.length} trips`);
-    
-    if (trips.length === 0) {
+    setLoadingSchedule(true);
+    try {
+      const queryDate = selectedDate;
+      const today = new Date();
+      const isToday = queryDate.toDateString() === today.toDateString();
+      const serviceId = formatDate(queryDate).replace(/-/g, '');
+      
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`LOADING SCHEDULE`);
+      console.log(`Route ID: ${selectedRoute.route_id}`);
+      console.log(`Variant: ${selectedRoute.variant || 'none'}`);
+      console.log(`Service ID: ${serviceId}`);
+      console.log(`Direction: ${selectedRoute.direction_id === 1 ? 'Inbound' : 'Outbound'}`);
+      console.log(`Departure Stop: ${departureStop.stop_id}`);
+      console.log(`Arrival Stop: ${arrivalStop?.stop_id || 'none'}`);
+      
+      // Get trips
+      let tripsQuery = `
+        SELECT trip_id, route_variant, direction_id
+        FROM trips 
+        WHERE route_id = ? 
+          AND service_id = ?
+          AND direction_id = ?
+      `;
+      
+      const queryParams: (string | number)[] = [
+        selectedRoute.route_id, 
+        serviceId, 
+        selectedRoute.direction_id !== undefined ? selectedRoute.direction_id : 0
+      ];
+      
+      if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
+        tripsQuery += ` AND route_variant = ?`;
+        queryParams.push(selectedRoute.variant);
+      }
+      
+      console.log(`\n🔍 SQL QUERY (Find Trips):`);
+      console.log(tripsQuery);
+      console.log(`Parameters:`, queryParams);
+      
+      const trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
+      console.log(`✅ Found ${trips.length} trips`);
+      
+      if (trips.length === 0) {
+        setLoadingSchedule(false);
+        Alert.alert('No Schedule', `No trips found`);
+        return;
+      }
+      
+      const tripIds = [...new Set(trips.map(t => t.trip_id).filter(id => id && id !== ''))];
+      console.log(`Unique trip IDs: ${tripIds.length}`);
+      
+      if (arrivalStop) {
+        setShowArrivalTime(true);
+        const allSchedules: TripWithArrival[] = [];
+        
+        for (const tripId of tripIds) {
+          try {
+            const stopTimes = await dbService.getStopTimesForTrip(tripId);
+            
+            if (stopTimes.length === 0) continue;
+            
+            let departureStopInfo = null;
+            let arrivalStopInfo = null;
+            let departureSeq = -1;
+            let arrivalSeq = -1;
+            
+            for (const stop of stopTimes) {
+              if (stop.stop_id === departureStop.stop_id) {
+                departureStopInfo = stop;
+                departureSeq = stop.stop_sequence;
+                console.log(`  Departure stop found: ${stop.stop_id} at sequence ${stop.stop_sequence}`);
+              }
+              if (stop.stop_id === arrivalStop.stop_id) {
+                arrivalStopInfo = stop;
+                arrivalSeq = stop.stop_sequence;
+                console.log(`  Arrival stop found: ${stop.stop_id} at sequence ${stop.stop_sequence}`);
+              }
+            }
+            
+            if (!departureStopInfo) {
+              console.log(`  ❌ Departure stop ${departureStop.stop_id} not found`);
+              continue;
+            }
+            
+            if (!arrivalStopInfo) {
+              console.log(`  ❌ Arrival stop ${arrivalStop.stop_id} not found`);
+              continue;
+            }
+            
+            let departureTime: number;
+            let arrivalTime: number;
+            
+            if (departureSeq < arrivalSeq) {
+              departureTime = departureStopInfo.departure_time;
+              arrivalTime = arrivalStopInfo.arrival_time;
+              console.log(`  → Departure (seq ${departureSeq}) before Arrival (seq ${arrivalSeq})`);
+            } else {
+              console.log(`  ⚠️ Warning: Departure (seq ${departureSeq}) after Arrival (seq ${arrivalSeq}) - swapping`);
+              departureTime = arrivalStopInfo.departure_time;
+              arrivalTime = departureStopInfo.arrival_time;
+            }
+            
+            if (!departureTime || departureTime === 0) {
+              console.log(`  ❌ No departure time`);
+              continue;
+            }
+            
+            if (!arrivalTime || arrivalTime === 0) {
+              console.log(`  ❌ No arrival time`);
+              continue;
+            }
+            
+            const travelMinutes = Math.round((arrivalTime - departureTime) / 60);
+            
+            if (travelMinutes <= 0) {
+              console.log(`  ❌ Invalid travel time: ${travelMinutes} minutes`);
+              continue;
+            }
+            
+            allSchedules.push({
+              trip_id: tripId,
+              departure_time: departureTime,
+              arrival_time: arrivalTime,
+              destination: selectedRoute.route_short_name,
+              departure_stop: departureStop.stop_id,
+              arrival_stop: arrivalStop.stop_id,
+              travel_time_minutes: travelMinutes
+            });
+            
+            console.log(`  ✅ Valid schedule: Depart ${secondsToTimeString(departureTime)} -> Arrive ${secondsToTimeString(arrivalTime)} (${travelMinutes} min)`);
+            
+          } catch (err) {
+            console.error(`Error processing trip ${tripId}:`, err);
+          }
+        }
+        
+        console.log(`\n📊 Found ${allSchedules.length} valid schedules out of ${tripIds.length} trips`);
+        
+        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
+        
+        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
+        let finalSchedules = allSchedules;
+        if (isToday) {
+          finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
+          console.log(`⏰ Filtered for today: ${allSchedules.length} -> ${finalSchedules.length}`);
+        }
+        
+        setSchedulesWithArrival(finalSchedules);
+        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
+        
+      } else {
+        setShowArrivalTime(false);
+        const allSchedules: ScheduleItem[] = [];
+        
+        for (const tripId of tripIds) {
+          try {
+            const stopTime = await dbService.getStopTime(tripId, departureStop.stop_id);
+            
+            if (!stopTime || !stopTime.departure_time) {
+              console.log(`  ❌ No departure time for trip ${tripId}`);
+              continue;
+            }
+            
+            allSchedules.push({
+              trip_id: tripId,
+              departure_time: stopTime.departure_time,
+              destination: selectedRoute.route_short_name,
+              stop_sequence: 0
+            });
+            
+            console.log(`  ✅ Departure time: ${secondsToTimeString(stopTime.departure_time)}`);
+            
+          } catch (err) {
+            console.error(`Error processing trip ${tripId}:`, err);
+          }
+        }
+        
+        console.log(`\n📊 Found ${allSchedules.length} departure schedules`);
+        
+        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
+        
+        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
+        let finalSchedules = allSchedules;
+        if (isToday) {
+          finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
+          console.log(`⏰ Filtered for today: ${allSchedules.length} -> ${finalSchedules.length}`);
+        }
+        
+        setSchedule(finalSchedules);
+        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
+      }
+      
+      console.log(`${'='.repeat(60)}\n`);
+      
+    } catch (error) {
+      console.error('Failed to load schedule:', error);
+      Alert.alert('Error', 'Failed to load schedule. Please try again.');
+    } finally {
       setLoadingSchedule(false);
-      Alert.alert('No Schedule', `No trips found`);
-      return;
     }
-    
-    const tripIds = [...new Set(trips.map(t => t.trip_id).filter(id => id && id !== ''))];
-    console.log(`Unique trip IDs: ${tripIds.length}`);
-    
-    if (arrivalStop) {
-      setShowArrivalTime(true);
-      const allSchedules: TripWithArrival[] = [];
-      
-      for (const tripId of tripIds) {
-        try {
-          // Log SQL query for stop_times
-          const stopTimesQuery = `
-            SELECT stop_id, stop_sequence, departure_time, arrival_time
-            FROM stop_times
-            WHERE trip_id = ?
-            ORDER BY stop_sequence
-          `;
-          
-          console.log(`\n🔍 SQL QUERY 2 (Get Stop Times for trip ${tripId}):`);
-          console.log(stopTimesQuery);
-          console.log(`Parameters: ["${tripId}"]`);
-          
-          const stopTimes = await db.getAllAsync<any>(stopTimesQuery, [tripId]);
-          console.log(`✅ Found ${stopTimes.length} stops for trip ${tripId}`);
-          
-          if (stopTimes.length === 0) continue;
-          
-          // Find both stops
-          let departureStopInfo = null;
-          let arrivalStopInfo = null;
-          let departureSeq = -1;
-          let arrivalSeq = -1;
-          
-          for (const stop of stopTimes) {
-            if (stop.stop_id === departureStop.stop_id) {
-              departureStopInfo = stop;
-              departureSeq = stop.stop_sequence;
-              console.log(`  Departure stop found: ${stop.stop_id} at sequence ${stop.stop_sequence}`);
-            }
-            if (stop.stop_id === arrivalStop.stop_id) {
-              arrivalStopInfo = stop;
-              arrivalSeq = stop.stop_sequence;
-              console.log(`  Arrival stop found: ${stop.stop_id} at sequence ${stop.stop_sequence}`);
-            }
-          }
-          
-          if (!departureStopInfo) {
-            console.log(`  ❌ Departure stop ${departureStop.stop_id} not found`);
-            continue;
-          }
-          
-          if (!arrivalStopInfo) {
-            console.log(`  ❌ Arrival stop ${arrivalStop.stop_id} not found`);
-            continue;
-          }
-          
-          // Determine which comes first in the trip sequence
-          let departureTime: number;
-          let arrivalTime: number;
-          
-          if (departureSeq < arrivalSeq) {
-            // Normal case: departure comes before arrival in the trip
-            departureTime = departureStopInfo.departure_time;
-            arrivalTime = arrivalStopInfo.arrival_time;
-            console.log(`  → Departure (seq ${departureSeq}) before Arrival (seq ${arrivalSeq})`);
-          } else {
-            // Reverse case: departure comes after arrival (user selected them backwards)
-            // Swap them - treat the earlier stop as departure
-            console.log(`  ⚠️ Warning: Departure (seq ${departureSeq}) after Arrival (seq ${arrivalSeq}) - swapping`);
-            departureTime = arrivalStopInfo.departure_time;
-            arrivalTime = departureStopInfo.arrival_time;
-          }
-          
-          if (!departureTime || departureTime === 0) {
-            console.log(`  ❌ No departure time`);
-            continue;
-          }
-          
-          if (!arrivalTime || arrivalTime === 0) {
-            console.log(`  ❌ No arrival time`);
-            continue;
-          }
-          
-          const travelMinutes = Math.round((arrivalTime - departureTime) / 60);
-          
-          if (travelMinutes <= 0) {
-            console.log(`  ❌ Invalid travel time: ${travelMinutes} minutes`);
-            continue;
-          }
-          
-          allSchedules.push({
-            trip_id: tripId,
-            departure_time: departureTime,
-            arrival_time: arrivalTime,
-            destination: selectedRoute.route_short_name,
-            departure_stop: departureStop.stop_id,
-            arrival_stop: arrivalStop.stop_id,
-            travel_time_minutes: travelMinutes
-          });
-          
-          console.log(`  ✅ Valid schedule: Depart ${secondsToTimeString(departureTime)} -> Arrive ${secondsToTimeString(arrivalTime)} (${travelMinutes} min)`);
-          
-        } catch (err) {
-          console.error(`Error processing trip ${tripId}:`, err);
-        }
-      }
-      
-      console.log(`\n📊 Found ${allSchedules.length} valid schedules out of ${tripIds.length} trips`);
-      
-      allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-      
-      const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-      let finalSchedules = allSchedules;
-      if (isToday) {
-        finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
-        console.log(`⏰ Filtered for today: ${allSchedules.length} -> ${finalSchedules.length}`);
-      }
-      
-      setSchedulesWithArrival(finalSchedules);
-      setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-      
-    } else {
-      // Similar fix for departure-only schedules
-      setShowArrivalTime(false);
-      const allSchedules: ScheduleItem[] = [];
-      
-      for (const tripId of tripIds) {
-        try {
-          const stopTimeQuery = `
-            SELECT departure_time, arrival_time
-            FROM stop_times
-            WHERE trip_id = ? AND stop_id = ?
-            LIMIT 1
-          `;
-          
-          console.log(`\n🔍 SQL QUERY (Get Departure Time for trip ${tripId}):`);
-          console.log(stopTimeQuery);
-          console.log(`Parameters: ["${tripId}", "${departureStop.stop_id}"]`);
-          
-          const stopTime = await db.getFirstAsync<any>(stopTimeQuery, [tripId, departureStop.stop_id]);
-          
-          if (!stopTime || !stopTime.departure_time) {
-            console.log(`  ❌ No departure time for trip ${tripId}`);
-            continue;
-          }
-          
-          allSchedules.push({
-            trip_id: tripId,
-            departure_time: stopTime.departure_time,
-            destination: selectedRoute.route_short_name,
-            stop_sequence: 0
-          });
-          
-          console.log(`  ✅ Departure time: ${secondsToTimeString(stopTime.departure_time)}`);
-          
-        } catch (err) {
-          console.error(`Error processing trip ${tripId}:`, err);
-        }
-      }
-      
-      console.log(`\n📊 Found ${allSchedules.length} departure schedules`);
-      
-      allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-      
-      const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-      let finalSchedules = allSchedules;
-      if (isToday) {
-        finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
-        console.log(`⏰ Filtered for today: ${allSchedules.length} -> ${finalSchedules.length}`);
-      }
-      
-      setSchedule(finalSchedules);
-      setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-    }
-    
-    console.log(`${'='.repeat(60)}\n`);
-    
-  } catch (error) {
-    console.error('Failed to load schedule:', error);
-    Alert.alert('Error', 'Failed to load schedule. Please try again.');
-  } finally {
-    setLoadingSchedule(false);
-  }
-};
+  };
 
   const onRefresh = async (): Promise<void> => {
     setRefreshing(true);
     await loadRoutesWithDirections();
     if (selectedRoute && departureStop) await loadRecentSchedule();
     setRefreshing(false);
-  };
-
-  const resetDatabase = async (): Promise<void> => {
-    Alert.alert('Reset Database', 'This will delete the current database and load the new one.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Reset',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setLoading(true);
-            await GoTransitService.resetAndLoadNewDatabase();
-            await loadRoutesWithDirections();
-            setSelectedRouteGroup(null);
-            setSelectedDirection(null);
-            setSelectedRoute(null);
-            setDepartureStop(null);
-            setArrivalStop(null);
-            setSchedule([]);
-            setSchedulesWithArrival([]);
-            setNextSchedule(null);
-            setSelectedDate(new Date());
-            setShowMap(false);
-            Alert.alert('Success', 'Database has been reset with new data');
-          } catch (error) {
-            console.error('Reset failed:', error);
-            Alert.alert('Error', 'Failed to reset database.');
-          } finally {
-            setLoading(false);
-          }
-        }
-      }
-    ]);
   };
 
   const getFormattedRouteLabel = (routeGroup: RouteGroup): string => {
@@ -709,11 +638,6 @@ const loadRecentSchedule = async (): Promise<void> => {
         <View style={styles.header}>
           <Text style={styles.title}>GO Transit Schedules</Text>
           <Text style={styles.subtitle}>Real-time Departures</Text>
-          <View style={styles.headerButtons}>
-            <TouchableOpacity onPress={resetDatabase} style={styles.resetButton}>
-              <Text style={styles.resetButtonText}>🔄 Reset DB</Text>
-            </TouchableOpacity>
-          </View>
         </View>
       ),
     });

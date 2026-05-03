@@ -10,6 +10,14 @@ export default function App() {
   const [isDbReady, setIsDbReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // In App.tsx, initialize database before rendering HomeScreen
+  useEffect(() => {
+    const init = async () => {
+      await DatabaseService.initializeDatabase();
+    };
+    init();
+  }, []);
+
   useEffect(() => {
     initializeApp();
   }, []);

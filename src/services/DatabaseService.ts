@@ -27,8 +27,10 @@ interface TripWithArrival {
 class DatabaseService {
   private static instance: DatabaseService;
   private db: SQLite.SQLiteDatabase | null = null;
-  private isInitialized: boolean = false;
   private dbPath: string = 'go_transit.db';
+  private isInitialized: boolean = false;
+  private initializationPromise: Promise<boolean> | null = null;
+  private queryQueue: Promise<any> = Promise.resolve();
 
   private constructor() {}
 
@@ -39,38 +41,73 @@ class DatabaseService {
     return DatabaseService.instance;
   }
 
-  // Initialize database with connection test
+  // Initialize database with proper singleton pattern - prevents multiple simultaneous initializations
   async initializeDatabase(): Promise<boolean> {
+    // If already initialized, return true
+    if (this.isInitialized && this.db) {
+      console.log('Database already initialized');
+      return true;
+    }
+
+    // If initialization is already in progress, wait for it
+    if (this.initializationPromise) {
+      console.log('Database initialization already in progress, waiting...');
+      return this.initializationPromise;
+    }
+
+    // Start initialization
+    this.initializationPromise = this._initializeDatabase();
+    const result = await this.initializationPromise;
+    this.initializationPromise = null;
+    return result;
+  }
+
+  private async _initializeDatabase(): Promise<boolean> {
     try {
       console.log('Initializing database...');
       
-      // Check if database file exists (without using FileSystem)
-      const dbExists = await this.checkDatabaseExists();
-      console.log(`Database file exists: ${dbExists}`);
-      
-      // Get database connection
-      const db = await this.getDatabase();
-      
-      // Test connection with simple query
-      const result = await db.getAllAsync<any>('SELECT COUNT(*) as count FROM sqlite_master WHERE type="table"');
-      console.log(`Database initialized with ${result[0]?.count} tables`);
-      
-      // Verify main tables exist
-      const tables = ['trips', 'stop_times', 'stops', 'routes', 'calendar'];
-      for (const table of tables) {
-        const tableCheck = await db.getAllAsync<any>(
-          `SELECT COUNT(*) as count FROM sqlite_master WHERE type="table" AND name=?`,
-          [table]
-        );
-        console.log(`Table ${table}: ${tableCheck[0]?.count > 0 ? '✓ exists' : '✗ missing'}`);
+      // Close existing connection if any
+      if (this.db) {
+        try {
+          await this.db.closeAsync();
+        } catch (e) {
+          // Ignore close errors
+          console.log('Error closing existing connection:', e);
+        }
+        this.db = null;
       }
       
-      // Get count of trips
-      const tripsCount = await db.getAllAsync<any>('SELECT COUNT(*) as count FROM trips');
-      console.log(`Trips table has ${tripsCount[0]?.count} records`);
+      // Open database synchronously
+      this.db = SQLite.openDatabaseSync(this.dbPath);
+      
+      // Test connection with a simple query
+      const testResult = await this.db.getAllAsync('SELECT 1');
+      console.log('Database connection test successful');
+      
+      // Verify required tables exist
+      const tables = await this.db.getAllAsync<any>(
+        `SELECT name FROM sqlite_master WHERE type='table' AND name IN ('routes', 'trips', 'stop_times', 'stops')`
+      );
+      
+      const tableNames = tables.map(t => t.name);
+      console.log('Tables found:', tableNames);
+      
+      const hasRequiredTables = tableNames.includes('routes') && 
+                                 tableNames.includes('trips') && 
+                                 tableNames.includes('stop_times') && 
+                                 tableNames.includes('stops');
+      
+      if (!hasRequiredTables) {
+        console.error('Missing required tables. Found:', tableNames);
+        return false;
+      }
+      
+      // Get route count to verify data
+      const routeCount = await this.db.getFirstAsync<any>('SELECT COUNT(*) as count FROM routes');
+      console.log(`Routes found: ${routeCount?.count || 0}`);
       
       this.isInitialized = true;
-      console.log('✅ Database initialization complete');
+      console.log('✅ Database initialized successfully');
       return true;
       
     } catch (error) {
@@ -81,52 +118,34 @@ class DatabaseService {
     }
   }
 
-  private async checkDatabaseExists(): Promise<boolean> {
-    try {
-      // Try to open the database - if it fails, it doesn't exist
-      const db = SQLite.openDatabaseSync(this.dbPath);
-      await db.getAllAsync('SELECT 1');
-      return true;
-    } catch (error) {
-      console.log('Database file check failed (might not exist yet):', error);
-      return false;
-    }
-  }
-
   private async getDatabase(): Promise<SQLite.SQLiteDatabase> {
-    if (!this.db) {
-      try {
-        console.log('Opening database connection...');
-        this.db = SQLite.openDatabaseSync(this.dbPath);
-        console.log('Database connected successfully');
-      } catch (error) {
-        console.error('Failed to open database:', error);
-        throw error;
+    if (!this.db || !this.isInitialized) {
+      const success = await this.initializeDatabase();
+      if (!success || !this.db) {
+        throw new Error('Database not initialized');
       }
     }
     return this.db;
   }
 
-  private async ensureDatabaseReady(): Promise<SQLite.SQLiteDatabase> {
-    // If not initialized, initialize first
-    if (!this.isInitialized) {
-      await this.initializeDatabase();
-    }
-    
-    const db = await this.getDatabase();
-    
-    // Verify connection is alive
-    try {
-      await db.getAllAsync('SELECT 1');
-      return db;
-    } catch (error) {
-      console.error('Database connection lost, reconnecting...');
-      this.db = null;
-      this.isInitialized = false;
-      const newDb = await this.getDatabase();
-      await this.initializeDatabase();
-      return newDb;
-    }
+  // Execute query with queue to prevent concurrent access issues
+  private async executeQuery<T>(query: string, params: any[] = []): Promise<T[]> {
+    return this.queryQueue = this.queryQueue.then(async () => {
+      try {
+        const db = await this.getDatabase();
+        const result = await db.getAllAsync<T>(query, params);
+        return result;
+      } catch (error) {
+        console.error('Query execution failed:', error);
+        // Don't throw, return empty array instead
+        return [];
+      }
+    });
+  }
+
+  private async executeFirstQuery<T>(query: string, params: any[] = []): Promise<T | null> {
+    const results = await this.executeQuery<T>(query, params);
+    return results.length > 0 ? results[0] : null;
   }
 
   private ensureString(value: string | number): string {
@@ -137,16 +156,19 @@ class DatabaseService {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
-    const yyyymmdd = `${year}${month}${day}`;
-    console.log(`Formatted service_id: ${yyyymmdd} for date: ${date.toDateString()}`);
-    return yyyymmdd;
+    return `${year}${month}${day}`;
   }
 
-  private isRouteValidForDate(routeId: string, date: Date): boolean {
+  isRouteValidForDate(routeId: string, date: Date): boolean {
+    console.log(`\n🔍 Checking route: ${routeId} for date: ${date.toDateString()}`);
+    
     const routeIdParts = routeId.split('-');
-    if (routeIdParts.length < 1) return true;
+    if (routeIdParts.length < 1) {
+      return true;
+    }
     
     const dateRangePart = routeIdParts[0];
+    console.log(`   Date range part: ${dateRangePart}`);
     
     if (dateRangePart.length >= 8 && /^\d+$/.test(dateRangePart)) {
       const startMMDD = dateRangePart.substring(0, 4);
@@ -156,64 +178,26 @@ class DatabaseService {
       const day = String(date.getDate()).padStart(2, '0');
       const currentMMDD = `${month}${day}`;
       
-      console.log(`\n📅 Checking route ${routeId} for date ${currentMMDD}`);
-      console.log(`   Start range: ${startMMDD}, End range: ${endMMDD}`);
+      console.log(`   Start: ${startMMDD}, End: ${endMMDD}, Current: ${currentMMDD}`);
       
+      let isValid: boolean;
       if (startMMDD <= endMMDD) {
-        const isValid = currentMMDD >= startMMDD && currentMMDD <= endMMDD;
-        console.log(`   Normal range check: ${isValid ? 'VALID ✓' : 'INVALID ✗'}`);
-        return isValid;
+        isValid = currentMMDD >= startMMDD && currentMMDD <= endMMDD;
       } else {
-        const isValid = currentMMDD >= startMMDD || currentMMDD <= endMMDD;
-        console.log(`   Wrap-around range check: ${isValid ? 'VALID ✓' : 'INVALID ✗'}`);
-        return isValid;
+        isValid = currentMMDD >= startMMDD || currentMMDD <= endMMDD;
       }
+      
+      console.log(`   ${isValid ? '✅ VALID' : '❌ INVALID'}`);
+      return isValid;
     }
     
+    console.log(`   No date range pattern, assuming valid`);
     return true;
   }
 
-  private getDirectionId(direction: string): number | undefined {
-    if (!direction) return undefined;
-    
-    const directionLower = direction.toLowerCase().trim();
-    
-    switch (directionLower) {
-      case 'inbound':
-        return 1; // Towards Union Station
-      case 'outbound':
-        return 0; // Away from Union Station
-      default:
-        return undefined;
-    }
-  }
-
-  async getValidRoutesForDate(date: Date): Promise<string[]> {
-    try {
-      const db = await this.ensureDatabaseReady();
-      
-      const routes = await db.getAllAsync<any>('SELECT DISTINCT route_id FROM trips');
-      
-      const validRoutes = routes
-        .map(r => r.route_id)
-        .filter(routeId => this.isRouteValidForDate(routeId, date));
-      
-      console.log(`\n========== VALID ROUTES FOR ${date.toDateString()} ==========`);
-      console.log(`Total routes: ${routes.length}`);
-      console.log(`Valid routes: ${validRoutes.length}`);
-      validRoutes.slice(0, 10).forEach(route => {
-        console.log(`  ✓ ${route}`);
-      });
-      if (validRoutes.length > 10) {
-        console.log(`  ... and ${validRoutes.length - 10} more`);
-      }
-      console.log('==========================================\n');
-      
-      return validRoutes;
-    } catch (error) {
-      console.error('Error getting valid routes for date:', error);
-      return [];
-    }
+  // Public methods
+  async executeCustomQuery<T>(query: string, params: any[] = []): Promise<T[]> {
+    return this.executeQuery<T>(query, params);
   }
 
   async getStopsByRoute(
@@ -222,54 +206,35 @@ class DatabaseService {
     date: Date
   ): Promise<Stop[]> {
     try {
-      const db = await this.ensureDatabaseReady();
       const routeIdStr = this.ensureString(routeId);
       const serviceId = this.formatDateToServiceId(date);
       
       console.log('\n========== GET STOPS BY ROUTE ==========');
       console.log(`Route ID: "${routeIdStr}"`);
-      console.log(`Variant: "${variant}"`);
-      console.log(`Date: ${date.toDateString()} -> service_id: ${serviceId}`);
+      console.log(`Variant: "${variant || 'none'}"`);
       
-      // Find trip matching route, variant, and service_id
-      const sampleTripQuery = `
-        SELECT trip_id, route_variant, service_id, direction_id
+      let query = `
+        SELECT trip_id, route_variant
         FROM trips 
         WHERE route_id = ?
           AND service_id = ?
-          AND route_variant = ?
-        LIMIT 1
       `;
       
-      const sampleParams: any[] = [routeIdStr, serviceId, variant];
+      const params: any[] = [routeIdStr, serviceId];
       
-      console.log(`Query: ${sampleTripQuery}`);
-      console.log(`Params: ${JSON.stringify(sampleParams)}`);
-      
-      const sampleTrip = await db.getAllAsync<any>(sampleTripQuery, sampleParams);
-      
-      if (sampleTrip.length === 0) {
-        console.log(`❌ No trips found for route ${routeIdStr}, variant ${variant}, service_id ${serviceId}`);
-        
-        // Try to find any trip for this route to help debug
-        const anyTrip = await db.getAllAsync<any>(
-          `SELECT service_id, route_variant, direction_id FROM trips WHERE route_id = ? LIMIT 3`,
-          [routeIdStr]
-        );
-        if (anyTrip.length > 0) {
-          console.log(`💡 Available trips for this route:`);
-          anyTrip.forEach(trip => {
-            console.log(`   service_id: ${trip.service_id}, variant: ${trip.route_variant}, direction: ${trip.direction_id}`);
-          });
-        }
-        return [];
+      if (variant && variant.trim() !== '') {
+        query += ` AND route_variant = ?`;
+        params.push(variant);
       }
       
-      console.log(`✅ Found sample trip:`);
-      console.log(`   Trip ID: ${sampleTrip[0].trip_id}`);
-      console.log(`   Direction ID: ${sampleTrip[0].direction_id} ${sampleTrip[0].direction_id === 1 ? '(inbound to Union)' : '(outbound from Union)'}`);
-      console.log(`   Variant: ${sampleTrip[0].route_variant}`);
-      console.log(`   Service ID: ${sampleTrip[0].service_id}`);
+      query += ` LIMIT 1`;
+      
+      const sampleTrip = await this.executeQuery<any>(query, params);
+      
+      if (sampleTrip.length === 0) {
+        console.log(`❌ No trips found`);
+        return [];
+      }
       
       const sampleTripId = sampleTrip[0].trip_id;
       
@@ -284,21 +249,14 @@ class DatabaseService {
         ORDER BY st.stop_sequence ASC
       `;
       
-      const stops = await db.getAllAsync<any>(stopsQuery, [sampleTripId]);
-      
-      console.log(`\n📊 Found ${stops.length} stops for trip ${sampleTripId}:`);
-      stops.forEach((stop, index) => {
-        console.log(`   ${stop.stop_sequence}. ${stop.stop_name}`);
-      });
+      const stops = await this.executeQuery<any>(stopsQuery, [sampleTripId]);
       
       const orderedStops = stops.map(stop => ({
         stop_id: stop.stop_id,
         stop_name: stop.stop_name,
       }));
       
-      console.log(`\n✅ Returning ${orderedStops.length} stops`);
-      console.log('==========================================\n');
-      
+      console.log(`✅ Returning ${orderedStops.length} stops`);
       return orderedStops as Stop[];
     } catch (error) {
       console.error('❌ Error fetching stops by route:', error);
@@ -306,307 +264,72 @@ class DatabaseService {
     }
   }
 
-  async getRecentSchedule(
-    routeId: string | number,
-    departureStopId: string | number,
-    arrivalStopId?: string | number,
-    date?: Date,
-    variant?: string,
-    direction?: string
-  ): Promise<ScheduleItem[]> {
+  async getTrips(
+    routeId: string,
+    serviceId: string,
+    directionId: number,
+    variant?: string
+  ): Promise<any[]> {
     try {
-      const db = await this.ensureDatabaseReady();
-      const routeIdStr = this.ensureString(routeId);
-      const departureStopIdStr = this.ensureString(departureStopId);
-      const queryDate = date || new Date();
-      const directionId = this.getDirectionId(direction || '');
-      
-      if (!this.isRouteValidForDate(routeIdStr, queryDate)) {
-        console.log(`❌ Route ${routeIdStr} is not valid for date ${queryDate.toDateString()}`);
-        return [];
-      }
-      
-      const serviceId = this.formatDateToServiceId(queryDate);
-      const now = new Date();
-      const currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-      const isToday = queryDate.toDateString() === now.toDateString();
-      
-      console.log('\n========== GET RECENT SCHEDULE ==========');
-      console.log(`Route ID: ${routeIdStr}`);
-      console.log(`Service ID: ${serviceId}`);
-      console.log(`Variant: ${variant || 'none'}`);
-      console.log(`Direction: ${direction || 'none'}`);
-      console.log(`Departure Stop: ${departureStopIdStr}`);
-      
       let query = `
-        SELECT 
-          t.trip_id,
-          t.trip_headsign as destination,
-          st.departure_time,
-          st.stop_sequence
-        FROM trips t
-        INNER JOIN stop_times st ON t.trip_id = st.trip_id
-        WHERE t.route_id = ?
-          AND t.service_id = ?
-          AND st.stop_id = ?
+        SELECT trip_id, route_variant, direction_id
+        FROM trips 
+        WHERE route_id = ?
+          AND service_id = ?
+          AND direction_id = ?
       `;
       
-      const params: any[] = [routeIdStr, serviceId, departureStopIdStr];
+      const params: any[] = [routeId, serviceId, directionId];
       
       if (variant && variant.trim() !== '') {
-        query += ` AND t.route_variant = ?`;
+        query += ` AND route_variant = ?`;
         params.push(variant);
       }
       
-      if (directionId !== undefined && directionId !== null) {
-        query += ` AND t.direction_id = ?`;
-        params.push(directionId);
-      }
-      
-      if (isToday) {
-        query += ` AND st.departure_time >= ?`;
-        params.push(currentSeconds);
-      }
-      
-      query += ` ORDER BY st.departure_time ASC LIMIT 50`;
-      
-      const results = await db.getAllAsync<any>(query, params);
-      
-      console.log(`Found ${results.length} schedules`);
-      return results as ScheduleItem[];
+      return await this.executeQuery<any>(query, params);
     } catch (error) {
-      console.error('❌ Error fetching schedule:', error);
+      console.error('Error getting trips:', error);
       return [];
     }
   }
 
-  async getNextSchedule(
-    routeId: string | number,
-    departureStopId: string | number,
-    arrivalStopId?: string | number,
-    date?: Date,
-    variant?: string,
-    direction?: string
-  ): Promise<ScheduleItem | null> {
+  async getStopTimesForTrip(tripId: string): Promise<any[]> {
     try {
-      const db = await this.ensureDatabaseReady();
-      const routeIdStr = this.ensureString(routeId);
-      const departureStopIdStr = this.ensureString(departureStopId);
-      const queryDate = date || new Date();
-      const directionId = this.getDirectionId(direction || '');
-      
-      if (!this.isRouteValidForDate(routeIdStr, queryDate)) {
-        console.log(`❌ Route ${routeIdStr} is not valid for date ${queryDate.toDateString()}`);
-        return null;
-      }
-      
-      const serviceId = this.formatDateToServiceId(queryDate);
-      const now = new Date();
-      const currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-      const isToday = queryDate.toDateString() === now.toDateString();
-      
-      let query = `
-        SELECT 
-          t.trip_id,
-          t.trip_headsign as destination,
-          st.departure_time,
-          st.stop_sequence
-        FROM trips t
-        INNER JOIN stop_times st ON t.trip_id = st.trip_id
-        WHERE t.route_id = ?
-          AND t.service_id = ?
-          AND st.stop_id = ?
+      const query = `
+        SELECT stop_id, stop_sequence, departure_time, arrival_time
+        FROM stop_times
+        WHERE trip_id = ?
+        ORDER BY stop_sequence
       `;
       
-      const params: any[] = [routeIdStr, serviceId, departureStopIdStr];
-      
-      if (variant && variant.trim() !== '') {
-        query += ` AND t.route_variant = ?`;
-        params.push(variant);
-      }
-      
-      if (directionId !== undefined && directionId !== null) {
-        query += ` AND t.direction_id = ?`;
-        params.push(directionId);
-      }
-      
-      if (isToday) {
-        query += ` AND st.departure_time >= ?`;
-        params.push(currentSeconds);
-      }
-      
-      query += ` ORDER BY st.departure_time ASC LIMIT 1`;
-      
-      const results = await db.getAllAsync<any>(query, params);
-      
-      if (results && results.length > 0) {
-        return results[0] as ScheduleItem;
-      }
-      return null;
+      return await this.executeQuery<any>(query, [tripId]);
     } catch (error) {
-      console.error('❌ Error fetching next schedule:', error);
-      return null;
-    }
-  }
-
-  async getScheduleWithArrival(
-    routeId: string | number,
-    departureStopId: string | number,
-    arrivalStopId: string | number,
-    date: Date,
-    variant?: string,
-    direction?: string
-  ): Promise<TripWithArrival[]> {
-    try {
-      const db = await this.ensureDatabaseReady();
-      const routeIdStr = this.ensureString(routeId);
-      const departureStopIdStr = this.ensureString(departureStopId);
-      const arrivalStopIdStr = this.ensureString(arrivalStopId);
-      const directionId = this.getDirectionId(direction || '');
-      
-      if (!this.isRouteValidForDate(routeIdStr, date)) {
-        console.log(`❌ Route ${routeIdStr} is not valid for date ${date.toDateString()}`);
-        return [];
-      }
-      
-      const serviceId = this.formatDateToServiceId(date);
-      const now = new Date();
-      const currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-      const isToday = date.toDateString() === now.toDateString();
-      
-      let query = `
-        SELECT 
-          t.trip_id,
-          t.trip_headsign as destination,
-          st_departure.departure_time,
-          st_arrival.arrival_time,
-          (st_arrival.arrival_time - st_departure.departure_time) / 60 as travel_time_minutes
-        FROM trips t
-        INNER JOIN stop_times st_departure ON t.trip_id = st_departure.trip_id
-        INNER JOIN stop_times st_arrival ON t.trip_id = st_arrival.trip_id
-        WHERE t.route_id = ?
-          AND t.service_id = ?
-          AND st_departure.stop_id = ?
-          AND st_arrival.stop_id = ?
-          AND st_arrival.arrival_time > st_departure.departure_time
-          AND st_departure.stop_sequence < st_arrival.stop_sequence
-      `;
-      
-      const params: any[] = [routeIdStr, serviceId, departureStopIdStr, arrivalStopIdStr];
-      
-      if (variant && variant.trim() !== '') {
-        query += ` AND t.route_variant = ?`;
-        params.push(variant);
-      }
-      
-      if (directionId !== undefined && directionId !== null) {
-        query += ` AND t.direction_id = ?`;
-        params.push(directionId);
-      }
-      
-      if (isToday) {
-        query += ` AND st_departure.departure_time >= ?`;
-        params.push(currentSeconds);
-      }
-      
-      query += ` ORDER BY st_departure.departure_time ASC LIMIT 50`;
-      
-      const results = await db.getAllAsync<any>(query, params);
-      
-      return results.map(r => ({
-        ...r,
-        travel_time_minutes: Math.round(r.travel_time_minutes)
-      })) as TripWithArrival[];
-    } catch (error) {
-      console.error('❌ Error fetching schedule with arrival:', error);
+      console.error('Error getting stop times for trip:', error);
       return [];
     }
   }
 
-  async getNextScheduleWithArrival(
-    routeId: string | number,
-    departureStopId: string | number,
-    arrivalStopId: string | number,
-    date: Date,
-    variant?: string,
-    direction?: string
-  ): Promise<TripWithArrival | null> {
+  async getStopTime(tripId: string, stopId: string): Promise<any | null> {
     try {
-      const db = await this.ensureDatabaseReady();
-      const routeIdStr = this.ensureString(routeId);
-      const departureStopIdStr = this.ensureString(departureStopId);
-      const arrivalStopIdStr = this.ensureString(arrivalStopId);
-      const directionId = this.getDirectionId(direction || '');
-      
-      if (!this.isRouteValidForDate(routeIdStr, date)) {
-        console.log(`❌ Route ${routeIdStr} is not valid for date ${date.toDateString()}`);
-        return null;
-      }
-      
-      const serviceId = this.formatDateToServiceId(date);
-      const now = new Date();
-      const currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-      const isToday = date.toDateString() === now.toDateString();
-      
-      let query = `
-        SELECT 
-          t.trip_id,
-          t.trip_headsign as destination,
-          st_departure.departure_time,
-          st_arrival.arrival_time,
-          (st_arrival.arrival_time - st_departure.departure_time) / 60 as travel_time_minutes
-        FROM trips t
-        INNER JOIN stop_times st_departure ON t.trip_id = st_departure.trip_id
-        INNER JOIN stop_times st_arrival ON t.trip_id = st_arrival.trip_id
-        WHERE t.route_id = ?
-          AND t.service_id = ?
-          AND st_departure.stop_id = ?
-          AND st_arrival.stop_id = ?
-          AND st_arrival.arrival_time > st_departure.departure_time
-          AND st_departure.stop_sequence < st_arrival.stop_sequence
+      const query = `
+        SELECT departure_time, arrival_time
+        FROM stop_times
+        WHERE trip_id = ? AND stop_id = ?
+        LIMIT 1
       `;
       
-      const params: any[] = [routeIdStr, serviceId, departureStopIdStr, arrivalStopIdStr];
-      
-      if (variant && variant.trim() !== '') {
-        query += ` AND t.route_variant = ?`;
-        params.push(variant);
-      }
-      
-      if (directionId !== undefined && directionId !== null) {
-        query += ` AND t.direction_id = ?`;
-        params.push(directionId);
-      }
-      
-      if (isToday) {
-        query += ` AND st_departure.departure_time >= ?`;
-        params.push(currentSeconds);
-      }
-      
-      query += ` ORDER BY st_departure.departure_time ASC LIMIT 1`;
-      
-      const results = await db.getAllAsync<any>(query, params);
-      
-      if (results && results.length > 0) {
-        return {
-          ...results[0],
-          travel_time_minutes: Math.round(results[0].travel_time_minutes)
-        } as TripWithArrival;
-      }
-      return null;
+      return await this.executeFirstQuery<any>(query, [tripId, stopId]);
     } catch (error) {
-      console.error('❌ Error fetching next schedule with arrival:', error);
+      console.error('Error getting stop time:', error);
       return null;
     }
   }
 
   async checkConnection(): Promise<boolean> {
     try {
-      const db = await this.ensureDatabaseReady();
-      await db.getAllAsync('SELECT 1');
+      await this.executeQuery('SELECT 1', []);
       return true;
     } catch (error) {
-      console.error('Database connection check failed:', error);
       return false;
     }
   }
