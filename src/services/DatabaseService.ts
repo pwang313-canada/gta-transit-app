@@ -291,6 +291,7 @@ async getStopsByRoute(routeId: string | number, variant?: string, date?: Date): 
 
   // Helper method to get stops for a specific trip
 // In DatabaseService.ts, update getStopsForTrip method:
+// In DatabaseService.ts, update the getStopsForTrip method:
 private async getStopsForTrip(tripId: string): Promise<Stop[]> {
     const db = await this.getDatabase();
     
@@ -314,42 +315,12 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
       console.log(`   ${stop.stop_sequence}. ${stop.stop_name} (${stop.stop_lat}, ${stop.stop_lon})`);
     });
     
-    // Include coordinates if available
     return stops.map(stop => ({
       stop_id: stop.stop_id,
       stop_name: stop.stop_name,
-      stop_lat: stop.stop_lat || null,
-      stop_lon: stop.stop_lon || null,
+      stop_lat: stop.stop_lat,
+      stop_lon: stop.stop_lon,
     })) as Stop[];
-  }
-
-  async getTrips(
-    routeId: string,
-    serviceId: string,
-    directionId: number,
-    variant?: string
-  ): Promise<any[]> {
-    try {
-      let query = `
-        SELECT trip_id, route_variant, direction_id
-        FROM trips 
-        WHERE route_id = ?
-          AND service_id = ?
-          AND direction_id = ?
-      `;
-      
-      const params: any[] = [routeId, serviceId, directionId];
-      
-      if (variant && variant.trim() !== '') {
-        query += ` AND route_variant = ?`;
-        params.push(variant);
-      }
-      
-      return await this.executeQuery<any>(query, params);
-    } catch (error) {
-      console.error('Error getting trips:', error);
-      return [];
-    }
   }
 
   async getStopTimesForTrip(tripId: string): Promise<any[]> {
@@ -403,6 +374,71 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
       } catch (error) {
         console.error('Error closing database:', error);
       }
+    }
+  }
+
+  // Add this method to DatabaseService.ts
+async getShapeForRoute(routeId: string | number, date?: Date, variant?: string): Promise<Array<{latitude: number, longitude: number}>> {
+    const db = await this.getDatabase();
+    const routeIdStr = this.ensureString(routeId);
+    
+    try {
+      console.log('\n========== GET SHAPE FOR ROUTE ==========');
+      console.log(`Route ID: "${routeIdStr}"`);
+      
+      const queryDate = date || new Date();
+      const serviceId = this.formatDateToServiceId(queryDate);
+      
+      // Get shape_id from a sample trip for this route
+      let tripQuery = `
+        SELECT DISTINCT t.shape_id
+        FROM trips t
+        WHERE t.route_id = ?
+          AND t.service_id = ?
+      `;
+      
+      const tripParams: any[] = [routeIdStr, serviceId];
+      
+      if (variant && typeof variant === 'string' && variant.trim() !== '' && variant !== 'none') {
+        tripQuery += ` AND t.route_variant = ?`;
+        tripParams.push(variant.trim());
+      }
+      
+      tripQuery += ` LIMIT 1`;
+      
+      const tripResult = await db.getAllAsync<any>(tripQuery, tripParams);
+      
+      if (tripResult.length === 0 || !tripResult[0].shape_id) {
+        console.log('❌ No shape found for this route');
+        return [];
+      }
+      
+      const shapeId = tripResult[0].shape_id;
+      console.log(`Found shape_id: ${shapeId}`);
+      
+      // Get shape points ordered by sequence
+      const shapeQuery = `
+        SELECT 
+          shape_pt_lat as latitude,
+          shape_pt_lon as longitude,
+          shape_pt_sequence
+        FROM shapes
+        WHERE shape_id = ?
+        ORDER BY shape_pt_sequence ASC
+      `;
+      
+      const shapePoints = await db.getAllAsync<any>(shapeQuery, [shapeId]);
+      
+      console.log(`✅ Loaded ${shapePoints.length} shape points`);
+      
+      return shapePoints.map(point => ({
+        latitude: point.latitude,
+        longitude: point.longitude,
+      }));
+      
+    } catch (error) {
+      console.error('❌ Error fetching shape for route:', error);
+      return [];
     }
   }
 }

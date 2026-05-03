@@ -1,14 +1,14 @@
-// src/components/RouteMapView.tsx (Fixed version)
+// src/components/RouteMapView.tsx
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import MapView, { Marker, Polyline } from 'react-native-maps';
 import DatabaseService from '../services/DatabaseService';
 
 interface RouteMapViewProps {
   routeId: string;
   routeShortName: string;
   variant?: string;
-  selectedDate?: Date; // Add selected date prop
+  selectedDate?: Date;
   visible: boolean;
   onClose: () => void;
   onSelectStop: (stop: any, type: 'departure' | 'arrival') => void;
@@ -24,6 +24,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
   onSelectStop,
 }) => {
   const [stops, setStops] = useState<any[]>([]);
+  const [shapeCoordinates, setShapeCoordinates] = useState<Array<{latitude: number, longitude: number}>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,31 +34,64 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     }
   }, [visible, routeId, variant, selectedDate]);
 
-const loadRouteGeometry = async () => {
+  const loadRouteGeometry = async () => {
     try {
       setLoading(true);
       setError(null);
       
       const dbService = DatabaseService;
-      const date = selectedDate;
+      const date = selectedDate || new Date();
       
       console.log('Loading route geometry...');
       console.log('Route ID:', routeId);
       console.log('Date:', date);
       console.log('Variant:', variant);
       
-      // FIX: Match the working pattern from your first log
-      // The working call was: getStopsByRoute(routeId, variant, date)
-      // Keep the same parameter order that was working before
-      const stopsList = await dbService.getStopsByRoute(
-        routeId,
-        variant || 'none',  // Pass variant or 'none' like the working call
-        date                 // Pass date as the third parameter
-      );
+      // Load stops and shape data in parallel
+      const [stopsList, shapeData] = await Promise.all([
+        dbService.getStopsByRoute(routeId, variant || undefined, date),
+        dbService.getShapeForRoute(routeId, date, variant || undefined)
+      ]);
+      
+      // Set shape coordinates
+      if (shapeData && shapeData.length > 0) {
+        setShapeCoordinates(shapeData);
+        console.log(`✅ Loaded ${shapeData.length} shape points`);
+      } else {
+        console.log('⚠️ No shape data found, will use straight lines between stops');
+        setShapeCoordinates([]);
+      }
       
       if (stopsList && stopsList.length > 0) {
-        setStops(stopsList);
-        console.log(`✅ Loaded ${stopsList.length} stops for route ${routeId}`);
+        // Use coordinates directly from database
+        const stopsWithCoords = stopsList.map((stop: any) => {
+          // Check if stop has valid coordinates from database
+          if (stop.stop_lat && stop.stop_lon && stop.stop_lat !== 0 && stop.stop_lon !== 0) {
+            return {
+              ...stop,
+              latitude: stop.stop_lat,
+              longitude: stop.stop_lon,
+              hasCoords: true
+            };
+          } else {
+            // Only if no coordinates in database, use a default near Toronto
+            console.warn(`Missing coordinates for: ${stop.stop_name}, using approximate location`);
+            return {
+              ...stop,
+              latitude: 43.645 + (Math.random() - 0.5) * 0.1, // Spread out stations without coords
+              longitude: -79.38 + (Math.random() - 0.5) * 0.1,
+              hasCoords: false
+            };
+          }
+        });
+        
+        setStops(stopsWithCoords);
+        console.log(`✅ Loaded ${stopsWithCoords.length} stops for route ${routeId}`);
+        
+        // Log coordinates for debugging
+        stopsWithCoords.forEach((stop: any) => {
+          console.log(`  ${stop.stop_name}: (${stop.latitude}, ${stop.longitude}) ${stop.hasCoords ? '✓' : '⚠️'}`);
+        });
       } else {
         console.log('❌ No stops found');
         setError('No stops found for this route on selected date');
@@ -70,31 +104,13 @@ const loadRouteGeometry = async () => {
     }
   };
 
-  // Get coordinates for each stop (you'll need to add these to your stops table or use geocoding)
-  const getStopCoordinates = (stop: any) => {
-    // If your stops have lat/lng in the database, use those
-    if (stop.stop_lat && stop.stop_lon) {
-      return {
-        latitude: stop.stop_lat,
-        longitude: stop.stop_lon,
-      };
-    }
-    
-    // Otherwise, you might need to add coordinates to your stops table
-    // For now, returning a default (you should add stop_lat and stop_lon to your stops table)
-    return {
-      latitude: 43.645,
-      longitude: -79.38,
-    };
-  };
-
   if (!visible) return null;
 
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#00A1E0" />
-        <Text style={styles.loadingText}>Loading route stops...</Text>
+        <Text style={styles.loadingText}>Loading route...</Text>
       </View>
     );
   }
@@ -124,14 +140,33 @@ const loadRouteGeometry = async () => {
     );
   }
 
-  // Calculate initial region based on first stop with coordinates
-  const firstStopCoords = getStopCoordinates(stops[0]);
-  const initialRegion = {
-    latitude: firstStopCoords.latitude,
-    longitude: firstStopCoords.longitude,
-    latitudeDelta: 0.1,
-    longitudeDelta: 0.1,
-  };
+  // Filter stops with valid coordinates for map display
+  const validStops = stops.filter(s => s.latitude && s.longitude);
+  
+  // Calculate map region based on stops with valid coordinates
+  let initialRegion;
+  if (validStops.length > 0) {
+    const lats = validStops.map(s => s.latitude);
+    const lngs = validStops.map(s => s.longitude);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    
+    initialRegion = {
+      latitude: (minLat + maxLat) / 2,
+      longitude: (minLng + maxLng) / 2,
+      latitudeDelta: Math.max((maxLat - minLat) * 1.5, 0.05),
+      longitudeDelta: Math.max((maxLng - minLng) * 1.5, 0.05),
+    };
+  } else {
+    initialRegion = {
+      latitude: 43.645,
+      longitude: -79.38,
+      latitudeDelta: 0.5,
+      longitudeDelta: 0.5,
+    };
+  }
 
   return (
     <View style={styles.container}>
@@ -148,26 +183,58 @@ const loadRouteGeometry = async () => {
         style={styles.map}
         initialRegion={initialRegion}
       >
+        {/* Draw the actual route shape from GTFS data */}
+        {shapeCoordinates.length > 1 && (
+          <Polyline
+            coordinates={shapeCoordinates}
+            strokeColor="#00A1E0"
+            strokeWidth={3}
+            lineCap="round"
+            lineJoin="round"
+          />
+        )}
+        
+        {/* Fallback: Draw straight lines between stops if no shape data */}
+        {shapeCoordinates.length === 0 && validStops.length > 1 && (
+          <Polyline
+            coordinates={validStops.map(s => ({
+              latitude: s.latitude,
+              longitude: s.longitude,
+            }))}
+            strokeColor="#FF6600"
+            strokeWidth={2}
+            lineDashPattern={[10, 5]}
+          />
+        )}
+        
+        {/* Station markers - using coordinates from database */}
         {stops.map((stop, index) => {
-          const coords = getStopCoordinates(stop);
+          if (!stop.latitude || !stop.longitude) return null;
+          
+          const isFirst = index === 0;
+          const isLast = index === stops.length - 1;
+          
           return (
             <Marker
               key={stop.stop_id}
-              coordinate={coords}
+              coordinate={{
+                latitude: stop.latitude,
+                longitude: stop.longitude,
+              }}
               title={stop.stop_name}
-              description={`Stop ${index + 1}`}
+              description={`${isFirst ? 'Start' : isLast ? 'End' : `Stop ${index + 1}`} • Tap to select`}
+              pinColor={isFirst ? 'green' : isLast ? 'red' : '#00A1E0'}
               onPress={() => {
-                // Show alert to choose departure or arrival
                 Alert.alert(
                   stop.stop_name,
-                  'Select stop type:',
+                  `Stop ${index + 1} of ${stops.length}${!stop.hasCoords ? '\n⚠️ Approximate location' : ''}\n\nSelect this as your:`,
                   [
                     {
-                      text: 'Set as Departure',
+                      text: 'Departure Station',
                       onPress: () => onSelectStop(stop, 'departure'),
                     },
                     {
-                      text: 'Set as Arrival',
+                      text: 'Arrival Station',
                       onPress: () => onSelectStop(stop, 'arrival'),
                     },
                     {
@@ -183,8 +250,17 @@ const loadRouteGeometry = async () => {
       </MapView>
       
       <View style={styles.legend}>
-        <Text style={styles.legendText}>
-          {stops.length} stops on this route • Tap a stop to select
+        <View style={styles.legendRow}>
+          <View style={[styles.legendDot, { backgroundColor: 'green' }]} />
+          <Text style={styles.legendText}>Start</Text>
+          <View style={[styles.legendDot, { backgroundColor: 'red' }]} />
+          <Text style={styles.legendText}>End</Text>
+          <View style={[styles.legendDot, { backgroundColor: '#00A1E0' }]} />
+          <Text style={styles.legendText}>Station</Text>
+        </View>
+        <Text style={styles.legendInfo}>
+          {stops.length} stops • {shapeCoordinates.length > 0 ? 'Actual route' : 'Approximate route'}
+          {stops.some(s => !s.hasCoords) ? ' • Some locations approximate' : ''}
         </Text>
       </View>
     </View>
@@ -223,13 +299,32 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   legend: {
-    padding: 8,
-    backgroundColor: 'rgba(255,255,255,0.9)',
+    padding: 10,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
+  },
+  legendRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  legendDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginHorizontal: 4,
   },
   legendText: {
     fontSize: 12,
     color: '#333',
+    marginRight: 12,
+  },
+  legendInfo: {
+    fontSize: 11,
+    color: '#666',
+    textAlign: 'center',
   },
   loadingContainer: {
     height: 400,
