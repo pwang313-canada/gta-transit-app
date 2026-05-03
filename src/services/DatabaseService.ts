@@ -104,6 +104,24 @@ class DatabaseService {
     return true; // No date range pattern found
   }
 
+  // Helper method to map direction names to direction_id values
+  // FIXED: Reversed the direction logic
+  // For routes like Milton (MI): Inbound = toward Union (direction_id = 1), Outbound = away from Union (direction_id = 0)
+  private getDirectionId(direction: string): number | undefined {
+    if (!direction) return undefined;
+    
+    const directionLower = direction.toLowerCase().trim();
+    
+    switch (directionLower) {
+      case 'inbound':
+        return 1; // Towards Union Station (last stop)
+      case 'outbound':
+        return 0; // Away from Union Station (towards first stop)
+      default:
+        return undefined;
+    }
+  }
+
   // Public method to get all valid routes for a specific date
   async getValidRoutesForDate(date: Date): Promise<string[]> {
     const db = await this.getDatabase();
@@ -134,28 +152,29 @@ class DatabaseService {
     }
   }
 
-  async getStopsByRoute(routeId: string | number, variant?: string): Promise<Stop[]> {
+  async getStopsByRoute(routeId: string | number, direction?: string): Promise<Stop[]> {
     const db = await this.getDatabase();
     const routeIdStr = this.ensureString(routeId);
+    const directionId = this.getDirectionId(direction || '');
     
     try {
       console.log('\n========== GET STOPS BY ROUTE ==========');
       console.log(`Route ID: "${routeIdStr}"`);
-      console.log(`Variant: "${variant}"`);
+      console.log(`Direction: "${direction || 'none'}" -> direction_id: ${directionId !== undefined ? directionId : 'none'}`);
       
-      // Get a sample trip for this route/variant
+      // Get a sample trip for this route/direction
       let sampleTripQuery = `
-        SELECT trip_id, route_variant, service_id 
+        SELECT trip_id, route_variant, service_id, direction_id
         FROM trips 
         WHERE route_id = ?
       `;
       
       const sampleParams: any[] = [routeIdStr];
       
-      if (variant && variant.trim() !== '') {
-        sampleTripQuery += ` AND route_variant = ?`;
-        sampleParams.push(variant);
-        console.log(`Filtering by variant: ${variant}`);
+      if (directionId !== undefined) {
+        sampleTripQuery += ` AND direction_id = ?`;
+        sampleParams.push(directionId);
+        console.log(`Filtering by direction_id: ${directionId}`);
       }
       
       sampleTripQuery += ` LIMIT 1`;
@@ -163,12 +182,13 @@ class DatabaseService {
       const sampleTrip = await db.getAllAsync<any>(sampleTripQuery, sampleParams);
       
       if (sampleTrip.length === 0) {
-        console.log(`❌ No trips found for route ${routeIdStr}${variant ? ` variant ${variant}` : ''}`);
+        console.log(`❌ No trips found for route ${routeIdStr}${directionId !== undefined ? ` direction_id ${directionId}` : ''}`);
         return [];
       }
       
       console.log(`✅ Found sample trip:`);
       console.log(`   Trip ID: ${sampleTrip[0].trip_id}`);
+      console.log(`   Direction ID: ${sampleTrip[0].direction_id}`);
       console.log(`   Variant: ${sampleTrip[0].route_variant}`);
       console.log(`   Service ID: ${sampleTrip[0].service_id}`);
       
@@ -215,12 +235,13 @@ class DatabaseService {
     arrivalStopId?: string | number,
     date?: Date,
     variant?: string,
-    directionId?: number
+    direction?: string
   ): Promise<ScheduleItem[]> {
     const db = await this.getDatabase();
     const routeIdStr = this.ensureString(routeId);
     const departureStopIdStr = this.ensureString(departureStopId);
     const queryDate = date || new Date();
+    const directionId = this.getDirectionId(direction || '');
     
     // First, check if the route is valid for this date
     if (!this.isRouteValidForDate(routeIdStr, queryDate)) {
@@ -239,7 +260,7 @@ class DatabaseService {
       console.log(`✓ Route is valid for ${queryDate.toDateString()}`);
       console.log(`Service ID: ${serviceId} (date: ${queryDate.toDateString()})`);
       console.log(`Variant: ${variant || 'none'}`);
-      console.log(`Direction ID: ${directionId !== undefined ? directionId : 'none'}`);
+      console.log(`Direction: "${direction || 'none'}" -> direction_id: ${directionId !== undefined ? directionId : 'none'}`);
       console.log(`Departure Stop: ${departureStopIdStr}`);
       console.log(`Is Today: ${isToday}`);
       console.log(`Current Time (seconds): ${currentSeconds}`);
@@ -304,12 +325,13 @@ class DatabaseService {
     arrivalStopId?: string | number,
     date?: Date,
     variant?: string,
-    directionId?: number
+    direction?: string
   ): Promise<ScheduleItem | null> {
     const db = await this.getDatabase();
     const routeIdStr = this.ensureString(routeId);
     const departureStopIdStr = this.ensureString(departureStopId);
     const queryDate = date || new Date();
+    const directionId = this.getDirectionId(direction || '');
     
     // First, check if the route is valid for this date
     if (!this.isRouteValidForDate(routeIdStr, queryDate)) {
@@ -328,7 +350,7 @@ class DatabaseService {
       console.log(`✓ Route is valid for ${queryDate.toDateString()}`);
       console.log(`Service ID: ${serviceId}`);
       console.log(`Variant: ${variant || 'none'}`);
-      console.log(`Direction ID: ${directionId !== undefined ? directionId : 'none'}`);
+      console.log(`Direction: "${direction || 'none'}" -> direction_id: ${directionId !== undefined ? directionId : 'none'}`);
       console.log(`Departure Stop: ${departureStopIdStr}`);
       
       let query = `
@@ -385,12 +407,13 @@ class DatabaseService {
     arrivalStopId: string | number,
     date: Date,
     variant?: string,
-    directionId?: number
+    direction?: string
   ): Promise<TripWithArrival[]> {
     const db = await this.getDatabase();
     const routeIdStr = this.ensureString(routeId);
     const departureStopIdStr = this.ensureString(departureStopId);
     const arrivalStopIdStr = this.ensureString(arrivalStopId);
+    const directionId = this.getDirectionId(direction || '');
     
     // First, check if the route is valid for this date
     if (!this.isRouteValidForDate(routeIdStr, date)) {
@@ -409,7 +432,7 @@ class DatabaseService {
       console.log(`✓ Route is valid for ${date.toDateString()}`);
       console.log(`Service ID: ${serviceId} (date: ${date.toDateString()})`);
       console.log(`Variant: ${variant || 'none'}`);
-      console.log(`Direction ID: ${directionId !== undefined ? directionId : 'none'}`);
+      console.log(`Direction: "${direction || 'none'}" -> direction_id: ${directionId !== undefined ? directionId : 'none'}`);
       console.log(`Departure Stop: ${departureStopIdStr}`);
       console.log(`Arrival Stop: ${arrivalStopIdStr}`);
       console.log(`Is Today: ${isToday}`);
@@ -482,12 +505,13 @@ class DatabaseService {
     arrivalStopId: string | number,
     date: Date,
     variant?: string,
-    directionId?: number
+    direction?: string
   ): Promise<TripWithArrival | null> {
     const db = await this.getDatabase();
     const routeIdStr = this.ensureString(routeId);
     const departureStopIdStr = this.ensureString(departureStopId);
     const arrivalStopIdStr = this.ensureString(arrivalStopId);
+    const directionId = this.getDirectionId(direction || '');
     
     // First, check if the route is valid for this date
     if (!this.isRouteValidForDate(routeIdStr, date)) {
@@ -506,7 +530,7 @@ class DatabaseService {
       console.log(`✓ Route is valid for ${date.toDateString()}`);
       console.log(`Service ID: ${serviceId}`);
       console.log(`Variant: ${variant || 'none'}`);
-      console.log(`Direction ID: ${directionId !== undefined ? directionId : 'none'}`);
+      console.log(`Direction: "${direction || 'none'}" -> direction_id: ${directionId !== undefined ? directionId : 'none'}`);
       console.log(`Departure Stop: ${departureStopIdStr}`);
       console.log(`Arrival Stop: ${arrivalStopIdStr}`);
       
