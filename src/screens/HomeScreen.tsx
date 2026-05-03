@@ -261,7 +261,7 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
       ? (selectedRouteGroup.routeNumber.match(/\d+/)?.[0] || selectedRouteGroup.routeNumber)
       : selectedRouteGroup.routeNumber;
     
-    console.log(`\n🔍 Looking for routes: ${routeNumber}, service: ${serviceId}, direction: ${direction === 'inbound' ? 0 : 1}`);
+    console.log(`\n🔍 Looking for routes: ${routeNumber}, service: ${serviceId}, direction: ${direction === 'inbound' ? 1 : 0}`);
     
     // Find routes with matching route_short_name, ordered by route_id DESC (most recent first)
     const routeQuery = `
@@ -274,7 +274,7 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
       ORDER BY r.route_id DESC
     `;
     
-    const queryParams: (string | number)[] = [routeNumber, serviceId, direction === 'inbound' ? 0 : 1];
+    const queryParams: (string | number)[] = [routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
     const availableRoutes = await db.getAllAsync<any>(routeQuery, queryParams);
     
     console.log(`Found ${availableRoutes.length} routes`);
@@ -318,13 +318,19 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
     setSelectedRoute(selectedRouteObj);
     
     // Load stops for this route
-    const variantParam = selectedRouteGroup.isBus ? selectedRouteGroup.variant : undefined;
-    console.log(`Loading stops for route: ${selectedRouteData.route_id}, variant: ${variantParam || 'none'}`);
-    
-    const stopsList = await DatabaseService.getStopsByRoute(
-      selectedRouteData.route_id, 
-      variantParam
-    );
+let variantParam: string;
+if (selectedRouteGroup.isBus && selectedRouteGroup.variant) {
+  variantParam = selectedRouteGroup.variant;
+} else {
+  variantParam = ''; // Empty string for non-bus routes or when variant is undefined
+}
+console.log(`Loading stops for route: ${selectedRouteData.route_id}, variant: ${variantParam || 'none'}`);
+
+const stopsList = await DatabaseService.getStopsByRoute(
+  selectedRouteData.route_id, 
+  variantParam,
+  selectedDate
+);
     
     console.log(`Found ${stopsList.length} stops`);
     

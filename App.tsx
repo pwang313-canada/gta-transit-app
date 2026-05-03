@@ -1,52 +1,13 @@
 // App.tsx
 import React, { useEffect, useState } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import {
-  View,
-  Text,
-  StyleSheet,
-  ActivityIndicator,
-  TouchableOpacity,
-  Alert,
-  StatusBar
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import GoTransitService from './src/services/GoTransitService';
-import HomeScreen from './src/screens/HomeScreen';
-import { RootStackParamList } from './src/types/navigation';
+import { ActivityIndicator, Alert, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import DatabaseService from './src/services/DatabaseService';
 
-// Create navigator
-const Stack = createNativeStackNavigator<RootStackParamList>();
+// Import your actual screen components here
+// import BusScheduleScreen from './src/screens/BusScheduleScreen';
 
-// Loading Screen Component
-function LoadingScreen() {
-  return (
-    <View style={styles.centered}>
-      <ActivityIndicator size="large" color="#00A1E0" />
-      <Text style={styles.loadingText}>Initializing Database...</Text>
-      <Text style={styles.loadingSubText}>First time may take a few seconds</Text>
-    </View>
-  );
-}
-
-// Error Screen Component
-function ErrorScreen({ error, onRetry }: { error: string; onRetry: () => void }) {
-  return (
-    <View style={styles.centered}>
-      <Text style={styles.errorIcon}>⚠️</Text>
-      <Text style={styles.errorTitle}>Error Loading Database</Text>
-      <Text style={styles.errorText}>{error}</Text>
-      <TouchableOpacity style={styles.retryButton} onPress={onRetry}>
-        <Text style={styles.retryButtonText}>Retry</Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-// Main App Component
 export default function App() {
-  const [isReady, setIsReady] = useState(false);
+  const [isDbReady, setIsDbReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,72 +16,75 @@ export default function App() {
 
   const initializeApp = async () => {
     try {
-      console.log('Initializing app...');
+      console.log('Starting app initialization...');
       
-      // Initialize database (only copies on first run)
-      await GoTransitService.init();
+      // Initialize database
+      const dbService = DatabaseService;
+      const success = await dbService.initializeDatabase();
       
-      // Verify database is ready
-      const isReady = await GoTransitService.isDatabaseReady();
-      
-      if (isReady) {
-        console.log('App initialized successfully');
+      if (success) {
+        console.log('✅ Database initialized successfully');
         
-        // Get database info for debugging
-        const dbInfo = await GoTransitService.getDatabaseInfo();
-        console.log('Database info:', dbInfo);
-        
-        setIsReady(true);
+        // Test connection
+        const isConnected = await dbService.checkConnection();
+        if (isConnected) {
+          console.log('✅ Database connection verified');
+          setIsDbReady(true);
+        } else {
+          throw new Error('Database connection test failed');
+        }
       } else {
-        setError('Database verification failed');
+        throw new Error('Database initialization failed');
       }
     } catch (err) {
-      console.error('Failed to initialize app:', err);
-      setError(err instanceof Error ? err.message : 'Unknown error occurred');
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      console.error('❌ App initialization failed:', errorMessage);
+      setError(errorMessage);
+      Alert.alert(
+        'Initialization Error',
+        `Failed to initialize database: ${errorMessage}\n\nPlease restart the app.`,
+        [{ text: 'OK', onPress: () => console.log('Error acknowledged') }]
+      );
     }
   };
 
-  const handleRetry = () => {
-    setError(null);
-    setIsReady(false);
-    initializeApp();
-  };
-
-  if (!isReady && !error) {
-    return <LoadingScreen />;
-  }
-
   if (error) {
-    return <ErrorScreen error={error} onRetry={handleRetry} />;
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centered}>
+          <Text style={styles.errorTitle}>Initialization Error</Text>
+          <Text style={styles.errorMessage}>{error}</Text>
+        </View>
+      </SafeAreaView>
+    );
   }
 
+  if (!isDbReady) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#0066CC" />
+          <Text style={styles.loadingText}>Initializing Database...</Text>
+          <Text style={styles.loadingSubtext}>Please wait</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Once database is ready, render your actual app
   return (
-    <NavigationContainer>
-      <Stack.Navigator
-        screenOptions={{
-          headerStyle: {
-            backgroundColor: '#00A1E0',
-          },
-          headerTintColor: '#fff',
-          headerTitleStyle: {
-            fontWeight: 'bold',
-          },
-        }}
-      >
-        <Stack.Screen 
-          name="Home" 
-          component={HomeScreen} 
-          options={{ 
-            title: 'GO Transit',
-            headerShown: false // Hide header since HomeScreen has its own header
-          }}
-        />
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaView style={styles.container}>
+      {/* Replace with your actual screen component */}
+      <View style={styles.content}>
+        <Text style={styles.title}>GO Transit Schedules</Text>
+        <Text style={styles.subtitle}>Database Ready ✓</Text>
+        {/* Your actual screen component here */}
+        {/* <BusScheduleScreen /> */}
+      </View>
+    </SafeAreaView>
   );
 }
 
-// Styles
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -130,46 +94,43 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#f5f5f5',
+    padding: 20,
+  },
+  content: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#0066CC',
+    marginBottom: 10,
+  },
+  subtitle: {
+    fontSize: 16,
+    color: '#4CAF50',
+    marginBottom: 20,
   },
   loadingText: {
+    fontSize: 18,
     marginTop: 20,
-    fontSize: 16,
-    color: '#00A1E0',
-    fontWeight: '500',
+    color: '#0066CC',
   },
-  loadingSubText: {
-    marginTop: 8,
-    fontSize: 12,
+  loadingSubtext: {
+    fontSize: 14,
+    marginTop: 10,
     color: '#666',
-  },
-  errorIcon: {
-    fontSize: 64,
-    marginBottom: 20,
   },
   errorTitle: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#333',
+    color: '#FF3B30',
     marginBottom: 10,
   },
-  errorText: {
+  errorMessage: {
     fontSize: 14,
     color: '#666',
     textAlign: 'center',
-    marginHorizontal: 40,
-    marginBottom: 20,
-  },
-  retryButton: {
-    backgroundColor: '#00A1E0',
-    paddingHorizontal: 30,
-    paddingVertical: 12,
-    borderRadius: 8,
-    marginTop: 10,
-  },
-  retryButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
   },
 });
