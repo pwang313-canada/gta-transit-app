@@ -101,11 +101,25 @@ export default function HomeScreen() {
   }, [selectedRouteGroup]);
 
   useEffect(() => {
-      const init = async () => {
-          await dbService.initializeDatabase();
-          await loadRoutesWithDirections();
-      };
-      init();
+    const init = async () => {
+      try {
+        const ok = await dbService.initializeDatabase();
+
+        await new Promise(res => setTimeout(res, 100));
+
+        if (!ok) {
+          throw new Error('Database failed to initialize');
+        }
+
+        await loadRoutesWithDirections();
+
+      } catch (e) {
+        console.error('INIT FAILED:', e);
+        Alert.alert('Database Error', 'Failed to load database');
+      }
+    };
+
+    init();
   }, []);
 
   useEffect(() => {
@@ -117,95 +131,116 @@ export default function HomeScreen() {
     loadSchedule();
   }, [selectedRoute, departureStop, arrivalStop, selectedDate]);
 
-  const loadRoutesWithDirections = async (): Promise<void> => {
-    try {
-      setLoading(true);
-      
-      const busVariants = await dbService.executeCustomQuery<any>(`
-        SELECT DISTINCT 
-          r.route_short_name,
-          r.route_long_name,
-          t.route_variant
-        FROM routes r
-        INNER JOIN trips t ON r.route_id = t.route_id
-        WHERE t.route_variant IS NOT NULL 
-          AND t.route_variant != ''
-          AND t.route_variant != r.route_short_name
-        ORDER BY t.route_variant
-      `);
+// src/screens/HomeScreen.tsx
+// Update the loadRoutesWithDirections method
 
-      const groups: { [key: string]: RouteGroup } = {};
+const loadRoutesWithDirections = async (): Promise<void> => {
+  try {
+    setLoading(true);
+    
+    // Get bus variants including those without letters
+    const busVariants = await dbService.executeCustomQuery<any>(`
+      SELECT DISTINCT 
+        r.route_short_name,
+        r.route_long_name,
+        t.route_variant
+      FROM routes r
+      INNER JOIN trips t ON r.route_id = t.route_id
+      WHERE t.route_variant IS NOT NULL 
+        AND t.route_variant != ''
+        AND (
+          t.route_variant != r.route_short_name
+          OR r.route_short_name = t.route_variant
+        )
+      ORDER BY t.route_variant
+    `);
 
-      busVariants.forEach((item: any) => {
-        const variant = item.route_variant;
+    const groups: { [key: string]: RouteGroup } = {};
+
+    // Process bus variants
+    busVariants.forEach((item: any) => {
+      const variant = item.route_variant;
+      // Don't skip if it matches the base route number - include it as a separate entry
+      if (!groups[variant]) {
         groups[variant] = {
           routeNumber: variant,
           routeLongName: item.route_long_name,
           isBus: true,
           variant: variant
         };
-      });
+      }
+    });
 
-      const trainRoutes = await dbService.executeCustomQuery<any>(`
-        SELECT DISTINCT 
-          r.route_short_name,
-          r.route_long_name
-        FROM routes r
-        WHERE r.route_short_name NOT IN (
-          SELECT DISTINCT t.route_variant 
-          FROM trips t 
-          WHERE t.route_variant IS NOT NULL 
-            AND t.route_variant != ''
-        )
-        AND r.route_short_name IS NOT NULL
-        AND r.route_short_name != ''
-        ORDER BY r.route_short_name
-      `);
+    // Get train routes (exclude all bus variants including the base numbers)
+    // Create a set of all bus route numbers to exclude
+    const busRouteNumbers = new Set(Object.keys(groups));
+    
+    const trainRoutes = await dbService.executeCustomQuery<any>(`
+      SELECT DISTINCT 
+        r.route_short_name,
+        r.route_long_name
+      FROM routes r
+      WHERE r.route_short_name NOT IN (
+        SELECT DISTINCT t.route_variant 
+        FROM trips t 
+        WHERE t.route_variant IS NOT NULL 
+          AND t.route_variant != ''
+      )
+      AND r.route_short_name IS NOT NULL
+      AND r.route_short_name != ''
+      AND r.route_short_name NOT IN (${Array.from(busRouteNumbers).map(() => '?').join(',')})
+      ORDER BY r.route_short_name
+    `, Array.from(busRouteNumbers));
 
-      trainRoutes.forEach((route: any) => {
-        const routeNumber = route.route_short_name;
-        if (!groups[routeNumber]) {
-          groups[routeNumber] = {
-            routeNumber: routeNumber,
-            routeLongName: route.route_long_name,
-            isBus: false,
-            variant: routeNumber
-          };
-        }
-      });
+    trainRoutes.forEach((route: any) => {
+      const routeNumber = route.route_short_name;
+      if (!groups[routeNumber]) {
+        groups[routeNumber] = {
+          routeNumber: routeNumber,
+          routeLongName: route.route_long_name,
+          isBus: false,
+          variant: routeNumber
+        };
+      }
+    });
 
-      const groupedRoutes = Object.values(groups);
-      groupedRoutes.sort((a, b) => {
-        if (a.isBus !== b.isBus) {
-          return a.isBus ? -1 : 1;
-        }
-        if (a.isBus) {
-          const aMatch = a.routeNumber.match(/(\d+)([A-Z]*)/);
-          const bMatch = b.routeNumber.match(/(\d+)([A-Z]*)/);
-          
-          if (aMatch && bMatch) {
-            const aNum = parseInt(aMatch[1]);
-            const bNum = parseInt(bMatch[1]);
-            if (aNum !== bNum) {
-              return aNum - bNum;
-            }
-            const aLetter = aMatch[2] || '';
-            const bLetter = bMatch[2] || '';
-            return aLetter.localeCompare(bLetter);
+    const groupedRoutes = Object.values(groups);
+    groupedRoutes.sort((a, b) => {
+      // Custom sort for bus routes like 21, 21B, 21C
+      if (a.isBus !== b.isBus) {
+        return a.isBus ? -1 : 1;
+      }
+      if (a.isBus) {
+        const aMatch = a.routeNumber.match(/(\d+)([A-Z]*)/);
+        const bMatch = b.routeNumber.match(/(\d+)([A-Z]*)/);
+        
+        if (aMatch && bMatch) {
+          const aNum = parseInt(aMatch[1]);
+          const bNum = parseInt(bMatch[1]);
+          if (aNum !== bNum) {
+            return aNum - bNum;
           }
-          return a.routeNumber.localeCompare(b.routeNumber);
+          // For same number, sort base number (no letter) before letter variants
+          const aLetter = aMatch[2] || '';
+          const bLetter = bMatch[2] || '';
+          if (aLetter === '' && bLetter !== '') return -1;
+          if (aLetter !== '' && bLetter === '') return 1;
+          return aLetter.localeCompare(bLetter);
         }
         return a.routeNumber.localeCompare(b.routeNumber);
-      });
+      }
+      return a.routeNumber.localeCompare(b.routeNumber);
+    });
 
-      setRouteGroups(groupedRoutes);
-    } catch (error) {
-      console.error('Failed to load routes:', error);
-      Alert.alert('Error', 'Failed to load transit data');
-    } finally {
-      setLoading(false);
-    }
-  };
+    setRouteGroups(groupedRoutes);
+    console.log('Loaded routes:', groupedRoutes.map(r => `${r.routeNumber} (${r.isBus ? 'Bus' : 'Train'})`));
+  } catch (error) {
+    console.error('Failed to load routes:', error);
+    Alert.alert('Error', 'Failed to load transit data');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
     setSelectedRouteGroup(routeGroup);
@@ -244,6 +279,7 @@ export default function HomeScreen() {
     try {
       const serviceId = formatDate(selectedDate).replace(/-/g, '');
       
+      // Parse route number correctly
       const routeNumberMatch = selectedRouteGroup.routeNumber.match(/^(\d+)([A-Z]*)$/);
       const baseRouteNumber = routeNumberMatch ? routeNumberMatch[1] : selectedRouteGroup.routeNumber;
       const routeLetter = routeNumberMatch ? routeNumberMatch[2] : '';
@@ -251,19 +287,37 @@ export default function HomeScreen() {
       let routeQuery: string;
       let queryParams: (string | number)[];
       
-      if (selectedRouteGroup.isBus && routeLetter) {
-        routeQuery = `
-          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
-          FROM routes r
-          INNER JOIN trips t ON r.route_id = t.route_id
-          WHERE r.route_short_name = ?
-            AND t.route_variant = ?
-            AND t.service_id = ?
-            AND t.direction_id = ?
-          ORDER BY r.route_id DESC
-        `;
-        queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+      if (selectedRouteGroup.isBus) {
+        // For buses, we need to match the exact variant including base numbers
+        if (routeLetter === '') {
+          // This is a base route like "21" (no letter)
+          routeQuery = `
+            SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
+            FROM routes r
+            INNER JOIN trips t ON r.route_id = t.route_id
+            WHERE r.route_short_name = ?
+              AND t.route_variant = ?
+              AND t.service_id = ?
+              AND t.direction_id = ?
+            ORDER BY r.route_id DESC
+          `;
+          queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+        } else {
+          // This is a variant like "21B" or "21C"
+          routeQuery = `
+            SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
+            FROM routes r
+            INNER JOIN trips t ON r.route_id = t.route_id
+            WHERE r.route_short_name = ?
+              AND t.route_variant = ?
+              AND t.service_id = ?
+              AND t.direction_id = ?
+            ORDER BY r.route_id DESC
+          `;
+          queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+        }
       } else {
+        // For trains
         routeQuery = `
           SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
           FROM routes r
@@ -528,7 +582,16 @@ export default function HomeScreen() {
 
   const getFormattedRouteLabel = (routeGroup: RouteGroup): string => {
     const routeType = routeGroup.isBus ? '🚌 Bus' : '🚆 Train';
-    return `${routeGroup.routeNumber} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
+    let displayNumber = routeGroup.routeNumber;
+    
+    // For bus routes, show the full variant (e.g., "21", "21B", "21C")
+    // For trains, just show the number
+    if (!routeGroup.isBus) {
+      // Trains might have numbers like "01", "02" - format them nicely
+      displayNumber = routeGroup.routeNumber;
+    }
+    
+    return `${displayNumber} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
   };
 
   const routeItems = routeGroups.map((rg: RouteGroup) => ({

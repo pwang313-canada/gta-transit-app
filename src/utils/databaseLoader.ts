@@ -34,6 +34,9 @@ export async function loadDatabase(): Promise<boolean> {
 
       source.copy(dbFile);   // ✅ correct binary copy
 
+      if (!dbFile.exists) {
+        throw new Error('Database copy failed');
+      }
       console.log('✅ Database copied to:', dbFile.uri);
     } else {
       console.log('📁 Database already exists at:', dbFile.uri);

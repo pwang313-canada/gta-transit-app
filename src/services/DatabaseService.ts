@@ -77,7 +77,7 @@ async initializeDatabase(): Promise<boolean> {
     console.error('❌ Database initialization failed:', error);
     this.isInitialized = false;
     this.db = null;
-    return false;
+    throw error;
   }
 }
 
@@ -144,69 +144,76 @@ async initializeDatabase(): Promise<boolean> {
   }
 
   // Get stops for a route
-  async getStopsByRoute(routeId: string | number, variant?: string, date?: Date): Promise<Stop[]> {
-    const db = await this.getDatabase();
-    const routeIdStr = this.ensureString(routeId);
+// Update the getStopsByRoute method in DatabaseService.ts
+async getStopsByRoute(routeId: string | number, variant?: string, date?: Date): Promise<Stop[]> {
+  const db = await this.getDatabase();
+  const routeIdStr = this.ensureString(routeId);
+  
+  try {
+    const queryDate = date || new Date();
+    const serviceId = this.formatDateToServiceId(queryDate);
     
-    try {
-      const queryDate = date || new Date();
-      const serviceId = this.formatDateToServiceId(queryDate);
-      
-      let sampleTripQuery = `
-        SELECT trip_id, route_variant, service_id, direction_id 
-        FROM trips 
-        WHERE route_id = ?
-          AND service_id = ?
-      `;
-      
-      const sampleParams: any[] = [routeIdStr, serviceId];
-      
-      if (variant && typeof variant === 'string' && variant.trim() !== '' && variant !== 'none') {
-        sampleTripQuery += ` AND route_variant = ?`;
-        sampleParams.push(variant.trim());
-      }
-      
-      sampleTripQuery += ` LIMIT 1`;
-      
-      const sampleTrip = await db.getAllAsync<any>(sampleTripQuery, sampleParams);
-      
-      if (sampleTrip.length === 0) {
-        return [];
-      }
-      
-      return await this.getStopsForTrip(sampleTrip[0].trip_id);
-    } catch (error) {
-      console.error('Error fetching stops by route:', error);
-      return [];
-    }
-  }
-
-  // Get stops for a specific trip
-  private async getStopsForTrip(tripId: string): Promise<Stop[]> {
-    const db = await this.getDatabase();
-    
-    const stopsQuery = `
-      SELECT 
-        s.stop_id, 
-        s.stop_name,
-        s.stop_lat,
-        s.stop_lon,
-        st.stop_sequence
-      FROM stop_times st
-      INNER JOIN stops s ON st.stop_id = s.stop_id
-      WHERE st.trip_id = ?
-      ORDER BY st.stop_sequence ASC
+    let sampleTripQuery = `
+      SELECT trip_id, route_variant, service_id, direction_id 
+      FROM trips 
+      WHERE route_id = ?
+        AND service_id = ?
     `;
     
-    const stops = await db.getAllAsync<any>(stopsQuery, [tripId]);
+    const sampleParams: any[] = [routeIdStr, serviceId];
     
-    return stops.map(stop => ({
-      stop_id: stop.stop_id,
-      stop_name: stop.stop_name,
-      stop_lat: stop.stop_lat,
-      stop_lon: stop.stop_lon,
-    })) as Stop[];
+    if (variant && typeof variant === 'string' && variant.trim() !== '' && variant !== 'none') {
+      sampleTripQuery += ` AND route_variant = ?`;
+      sampleParams.push(variant.trim());
+    }
+    
+    sampleTripQuery += ` LIMIT 1`;
+    
+    const sampleTrip = await db.getAllAsync<any>(sampleTripQuery, sampleParams);
+    
+    if (sampleTrip.length === 0) {
+      // Try without service_id filter
+      const fallbackTrip = await db.getAllAsync<any>(
+        `SELECT trip_id FROM trips WHERE route_id = ? LIMIT 1`,
+        [routeIdStr]
+      );
+      if (fallbackTrip.length === 0) return [];
+      return await this.getStopsForTrip(fallbackTrip[0].trip_id);
+    }
+    
+    return await this.getStopsForTrip(sampleTrip[0].trip_id);
+  } catch (error) {
+    console.error('Error fetching stops by route:', error);
+    return [];
   }
+}
+
+// Also update the getStopsForTrip method to ensure coordinates are numbers
+private async getStopsForTrip(tripId: string): Promise<Stop[]> {
+  const db = await this.getDatabase();
+  
+  const stopsQuery = `
+    SELECT 
+      s.stop_id, 
+      s.stop_name,
+      CAST(s.stop_lat AS REAL) as stop_lat,
+      CAST(s.stop_lon AS REAL) as stop_lon,
+      st.stop_sequence
+    FROM stop_times st
+    INNER JOIN stops s ON st.stop_id = s.stop_id
+    WHERE st.trip_id = ?
+    ORDER BY st.stop_sequence ASC
+  `;
+  
+  const stops = await db.getAllAsync<any>(stopsQuery, [tripId]);
+  
+  return stops.map(stop => ({
+    stop_id: stop.stop_id,
+    stop_name: stop.stop_name,
+    stop_lat: stop.stop_lat,
+    stop_lon: stop.stop_lon,
+  })) as Stop[];
+}
 
   // Get shape for a route
   async getShapeForRoute(routeId: string | number, date?: Date, variant?: string): Promise<Array<{latitude: number, longitude: number}>> {
