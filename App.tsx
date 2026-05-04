@@ -3,8 +3,6 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import DatabaseService from './src/services/DatabaseService';
 
-// Import your actual screen components here
-// import BusScheduleScreen from './src/screens/BusScheduleScreen';
 
 export default function App() {
   const [isDbReady, setIsDbReady] = useState(false);

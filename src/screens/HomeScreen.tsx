@@ -1,4 +1,4 @@
-// src/screens/HomeScreen.tsx - Complete version using only DatabaseService
+// src/screens/HomeScreen.tsx
 import DateTimePicker from '@react-native-community/datetimepicker';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -89,7 +89,6 @@ export default function HomeScreen() {
   const dbService = DatabaseService;
 
   useEffect(() => {
-    // Reset all schedule-related state when route group changes
     setSelectedDirection(null);
     setSelectedRoute(null);
     setDepartureStop(null);
@@ -102,9 +101,25 @@ export default function HomeScreen() {
   }, [selectedRouteGroup]);
 
   useEffect(() => {
-    loadRoutesWithDirections();
-    // Initialize database
-    dbService.initializeDatabase();
+    const init = async () => {
+      try {
+        const ok = await dbService.initializeDatabase();
+
+        await new Promise(res => setTimeout(res, 100));
+
+        if (!ok) {
+          throw new Error('Database failed to initialize');
+        }
+
+        await loadRoutesWithDirections();
+
+      } catch (e) {
+        console.error('INIT FAILED:', e);
+        Alert.alert('Database Error', 'Failed to load database');
+      }
+    };
+
+    init();
   }, []);
 
   useEffect(() => {
@@ -116,105 +131,116 @@ export default function HomeScreen() {
     loadSchedule();
   }, [selectedRoute, departureStop, arrivalStop, selectedDate]);
 
-  const loadRoutesWithDirections = async (): Promise<void> => {
-    try {
-      setLoading(true);
-      
-      // Get all bus variants (routes that have route_variant different from route_short_name)
-      const busVariants = await dbService.executeCustomQuery<any>(`
-        SELECT DISTINCT 
-          r.route_short_name,
-          r.route_long_name,
-          t.route_variant
-        FROM routes r
-        INNER JOIN trips t ON r.route_id = t.route_id
-        WHERE t.route_variant IS NOT NULL 
-          AND t.route_variant != ''
-          AND t.route_variant != r.route_short_name
-        ORDER BY t.route_variant
-      `);
+// src/screens/HomeScreen.tsx
+// Update the loadRoutesWithDirections method
 
-      const groups: { [key: string]: RouteGroup } = {};
+const loadRoutesWithDirections = async (): Promise<void> => {
+  try {
+    setLoading(true);
+    
+    // Get bus variants including those without letters
+    const busVariants = await dbService.executeCustomQuery<any>(`
+      SELECT DISTINCT 
+        r.route_short_name,
+        r.route_long_name,
+        t.route_variant
+      FROM routes r
+      INNER JOIN trips t ON r.route_id = t.route_id
+      WHERE t.route_variant IS NOT NULL 
+        AND t.route_variant != ''
+        AND (
+          t.route_variant != r.route_short_name
+          OR r.route_short_name = t.route_variant
+        )
+      ORDER BY t.route_variant
+    `);
 
-      // Add bus variants
-      busVariants.forEach((item: any) => {
-        const variant = item.route_variant;
+    const groups: { [key: string]: RouteGroup } = {};
+
+    // Process bus variants
+    busVariants.forEach((item: any) => {
+      const variant = item.route_variant;
+      // Don't skip if it matches the base route number - include it as a separate entry
+      if (!groups[variant]) {
         groups[variant] = {
           routeNumber: variant,
           routeLongName: item.route_long_name,
           isBus: true,
           variant: variant
         };
-      });
+      }
+    });
 
-      // Get all train routes (routes without variants)
-      const trainRoutes = await dbService.executeCustomQuery<any>(`
-        SELECT DISTINCT 
-          r.route_short_name,
-          r.route_long_name
-        FROM routes r
-        WHERE r.route_short_name NOT IN (
-          SELECT DISTINCT t.route_variant 
-          FROM trips t 
-          WHERE t.route_variant IS NOT NULL 
-            AND t.route_variant != ''
-        )
-        AND r.route_short_name IS NOT NULL
-        AND r.route_short_name != ''
-        ORDER BY r.route_short_name
-      `);
+    // Get train routes (exclude all bus variants including the base numbers)
+    // Create a set of all bus route numbers to exclude
+    const busRouteNumbers = new Set(Object.keys(groups));
+    
+    const trainRoutes = await dbService.executeCustomQuery<any>(`
+      SELECT DISTINCT 
+        r.route_short_name,
+        r.route_long_name
+      FROM routes r
+      WHERE r.route_short_name NOT IN (
+        SELECT DISTINCT t.route_variant 
+        FROM trips t 
+        WHERE t.route_variant IS NOT NULL 
+          AND t.route_variant != ''
+      )
+      AND r.route_short_name IS NOT NULL
+      AND r.route_short_name != ''
+      AND r.route_short_name NOT IN (${Array.from(busRouteNumbers).map(() => '?').join(',')})
+      ORDER BY r.route_short_name
+    `, Array.from(busRouteNumbers));
 
-      // Add train routes
-      trainRoutes.forEach((route: any) => {
-        const routeNumber = route.route_short_name;
-        if (!groups[routeNumber]) {
-          groups[routeNumber] = {
-            routeNumber: routeNumber,
-            routeLongName: route.route_long_name,
-            isBus: false,
-            variant: routeNumber
-          };
-        }
-      });
+    trainRoutes.forEach((route: any) => {
+      const routeNumber = route.route_short_name;
+      if (!groups[routeNumber]) {
+        groups[routeNumber] = {
+          routeNumber: routeNumber,
+          routeLongName: route.route_long_name,
+          isBus: false,
+          variant: routeNumber
+        };
+      }
+    });
 
-      const groupedRoutes = Object.values(groups);
-      groupedRoutes.sort((a, b) => {
-        // Put buses first
-        if (a.isBus !== b.isBus) {
-          return a.isBus ? -1 : 1;
-        }
-        // For buses, sort by number then letter
-        if (a.isBus) {
-          const aMatch = a.routeNumber.match(/(\d+)([A-Z]*)/);
-          const bMatch = b.routeNumber.match(/(\d+)([A-Z]*)/);
-          
-          if (aMatch && bMatch) {
-            const aNum = parseInt(aMatch[1]);
-            const bNum = parseInt(bMatch[1]);
-            if (aNum !== bNum) {
-              return aNum - bNum;
-            }
-            const aLetter = aMatch[2] || '';
-            const bLetter = bMatch[2] || '';
-            return aLetter.localeCompare(bLetter);
+    const groupedRoutes = Object.values(groups);
+    groupedRoutes.sort((a, b) => {
+      // Custom sort for bus routes like 21, 21B, 21C
+      if (a.isBus !== b.isBus) {
+        return a.isBus ? -1 : 1;
+      }
+      if (a.isBus) {
+        const aMatch = a.routeNumber.match(/(\d+)([A-Z]*)/);
+        const bMatch = b.routeNumber.match(/(\d+)([A-Z]*)/);
+        
+        if (aMatch && bMatch) {
+          const aNum = parseInt(aMatch[1]);
+          const bNum = parseInt(bMatch[1]);
+          if (aNum !== bNum) {
+            return aNum - bNum;
           }
-          return a.routeNumber.localeCompare(b.routeNumber);
+          // For same number, sort base number (no letter) before letter variants
+          const aLetter = aMatch[2] || '';
+          const bLetter = bMatch[2] || '';
+          if (aLetter === '' && bLetter !== '') return -1;
+          if (aLetter !== '' && bLetter === '') return 1;
+          return aLetter.localeCompare(bLetter);
         }
-        // For trains, sort alphabetically
         return a.routeNumber.localeCompare(b.routeNumber);
-      });
+      }
+      return a.routeNumber.localeCompare(b.routeNumber);
+    });
 
-      setRouteGroups(groupedRoutes);
-      console.log(`\n✅ Loaded ${groupedRoutes.length} route groups`);
-      console.log('Bus routes:', groupedRoutes.filter(r => r.isBus).map(r => r.routeNumber).join(', '));
-      console.log('Train routes:', groupedRoutes.filter(r => !r.isBus).map(r => r.routeNumber).join(', '));
-    } catch (error) {
-      console.error('Failed to load routes:', error);
-      Alert.alert('Error', 'Failed to load transit data');
-    } finally {
-      setLoading(false);
-    }
-  };
+    setRouteGroups(groupedRoutes);
+    console.log('Loaded routes:', groupedRoutes.map(r => `${r.routeNumber} (${r.isBus ? 'Bus' : 'Train'})`));
+  } catch (error) {
+    console.error('Failed to load routes:', error);
+    Alert.alert('Error', 'Failed to load transit data');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
     setSelectedRouteGroup(routeGroup);
@@ -238,7 +264,7 @@ export default function HomeScreen() {
     ) || null;
   };
 
-const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise<void> => {
+  const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise<void> => {
     if (!selectedRouteGroup) return;
 
     setSelectedDirection(direction);
@@ -253,31 +279,45 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
     try {
       const serviceId = formatDate(selectedDate).replace(/-/g, '');
       
-      // Get base route number and variant
+      // Parse route number correctly
       const routeNumberMatch = selectedRouteGroup.routeNumber.match(/^(\d+)([A-Z]*)$/);
       const baseRouteNumber = routeNumberMatch ? routeNumberMatch[1] : selectedRouteGroup.routeNumber;
       const routeLetter = routeNumberMatch ? routeNumberMatch[2] : '';
       
-      console.log(`\n🔍 Looking for routes: base=${baseRouteNumber}, letter=${routeLetter}, service=${serviceId}, direction=${direction}`);
-      
       let routeQuery: string;
       let queryParams: (string | number)[];
       
-      if (selectedRouteGroup.isBus && routeLetter) {
-        // For bus with letter variant (e.g., "21C"), search by route_short_name = base number AND route_variant = full variant
-        routeQuery = `
-          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
-          FROM routes r
-          INNER JOIN trips t ON r.route_id = t.route_id
-          WHERE r.route_short_name = ?
-            AND t.route_variant = ?
-            AND t.service_id = ?
-            AND t.direction_id = ?
-          ORDER BY r.route_id DESC
-        `;
-        queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+      if (selectedRouteGroup.isBus) {
+        // For buses, we need to match the exact variant including base numbers
+        if (routeLetter === '') {
+          // This is a base route like "21" (no letter)
+          routeQuery = `
+            SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
+            FROM routes r
+            INNER JOIN trips t ON r.route_id = t.route_id
+            WHERE r.route_short_name = ?
+              AND t.route_variant = ?
+              AND t.service_id = ?
+              AND t.direction_id = ?
+            ORDER BY r.route_id DESC
+          `;
+          queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+        } else {
+          // This is a variant like "21B" or "21C"
+          routeQuery = `
+            SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
+            FROM routes r
+            INNER JOIN trips t ON r.route_id = t.route_id
+            WHERE r.route_short_name = ?
+              AND t.route_variant = ?
+              AND t.service_id = ?
+              AND t.direction_id = ?
+            ORDER BY r.route_id DESC
+          `;
+          queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, direction === 'inbound' ? 1 : 0];
+        }
       } else {
-        // For trains or buses without letter, search by route_short_name only
+        // For trains
         routeQuery = `
           SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
           FROM routes r
@@ -292,29 +332,23 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
       
       const availableRoutes = await dbService.executeCustomQuery<any>(routeQuery, queryParams);
       
-      console.log(`Found ${availableRoutes.length} routes`);
-      
       if (availableRoutes.length === 0) {
         Alert.alert('No Service', `No ${direction} service for ${selectedRouteGroup.routeNumber} on ${selectedDate.toDateString()}`);
         setSelectedDirection(null);
         return;
       }
       
-      // Find which route is valid for this date (for buses with date ranges)
       let selectedRouteData = null;
       if (selectedRouteGroup.isBus) {
         for (const route of availableRoutes) {
           const isValid = dbService.isRouteValidForDate(route.route_id, selectedDate);
-          console.log(`  ${route.route_id}: ${isValid ? 'VALID' : 'INVALID'}`);
           if (isValid) {
             selectedRouteData = route;
             break;
           }
         }
       } else {
-        // For trains, take the first one (most recent)
         selectedRouteData = availableRoutes[0];
-        console.log(`  Selected train route: ${selectedRouteData.route_id}`);
       }
       
       if (!selectedRouteData) {
@@ -332,12 +366,10 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
       
       setSelectedRoute(selectedRouteObj);
       
-      // Load stops for this route
       let variantParam: string = '';
       if (selectedRouteGroup.isBus && selectedRouteGroup.variant) {
         variantParam = selectedRouteGroup.variant;
       }
-      console.log(`Loading stops for route: ${selectedRouteData.route_id}, variant: ${variantParam || 'none'}`);
       
       const stopsList = await dbService.getStopsByRoute(
         selectedRouteData.route_id, 
@@ -345,27 +377,20 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
         selectedDate
       );
       
-      console.log(`Found ${stopsList.length} stops`);
-      
       const typedStops: Stop[] = stopsList.map((stop: any) => ({
         stop_id: stop.stop_id,
         stop_name: stop.stop_name,
       }));
       setStops(typedStops);
       
-      // Find Union Station
       const unionStop = findUnionStation(typedStops);
       
-      // For inbound: depart from somewhere, arrive at Union
-      // For outbound: depart from Union, arrive somewhere
       if (direction === 'inbound') {
         setArrivalStop(unionStop || null);
         setDepartureStop(null);
-        console.log(`Inbound: Arrival set to Union Station (${unionStop?.stop_name || 'not found'})`);
       } else {
         setDepartureStop(unionStop || null);
         setArrivalStop(null);
-        console.log(`Outbound: Departure set to Union Station (${unionStop?.stop_name || 'not found'})`);
       }
       
       if (typedStops.length === 0) {
@@ -413,16 +438,6 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
       const isToday = queryDate.toDateString() === today.toDateString();
       const serviceId = formatDate(queryDate).replace(/-/g, '');
       
-      console.log(`\n${'='.repeat(60)}`);
-      console.log(`LOADING SCHEDULE`);
-      console.log(`Route ID: ${selectedRoute.route_id}`);
-      console.log(`Variant: ${selectedRoute.variant || 'none'}`);
-      console.log(`Service ID: ${serviceId}`);
-      console.log(`Direction: ${selectedRoute.direction_id === 1 ? 'Inbound' : 'Outbound'}`);
-      console.log(`Departure Stop: ${departureStop.stop_id}`);
-      console.log(`Arrival Stop: ${arrivalStop?.stop_id || 'none'}`);
-      
-      // Get trips
       let tripsQuery = `
         SELECT trip_id, route_variant, direction_id
         FROM trips 
@@ -442,12 +457,7 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
         queryParams.push(selectedRoute.variant);
       }
       
-      console.log(`\n🔍 SQL QUERY (Find Trips):`);
-      console.log(tripsQuery);
-      console.log(`Parameters:`, queryParams);
-      
       const trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
-      console.log(`✅ Found ${trips.length} trips`);
       
       if (trips.length === 0) {
         setLoadingSchedule(false);
@@ -456,7 +466,6 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
       }
       
       const tripIds = [...new Set(trips.map(t => t.trip_id).filter(id => id && id !== ''))];
-      console.log(`Unique trip IDs: ${tripIds.length}`);
       
       if (arrivalStop) {
         setShowArrivalTime(true);
@@ -465,7 +474,6 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
         for (const tripId of tripIds) {
           try {
             const stopTimes = await dbService.getStopTimesForTrip(tripId);
-            
             if (stopTimes.length === 0) continue;
             
             let departureStopInfo = null;
@@ -477,24 +485,14 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
               if (stop.stop_id === departureStop.stop_id) {
                 departureStopInfo = stop;
                 departureSeq = stop.stop_sequence;
-                console.log(`  Departure stop found: ${stop.stop_id} at sequence ${stop.stop_sequence}`);
               }
               if (stop.stop_id === arrivalStop.stop_id) {
                 arrivalStopInfo = stop;
                 arrivalSeq = stop.stop_sequence;
-                console.log(`  Arrival stop found: ${stop.stop_id} at sequence ${stop.stop_sequence}`);
               }
             }
             
-            if (!departureStopInfo) {
-              console.log(`  ❌ Departure stop ${departureStop.stop_id} not found`);
-              continue;
-            }
-            
-            if (!arrivalStopInfo) {
-              console.log(`  ❌ Arrival stop ${arrivalStop.stop_id} not found`);
-              continue;
-            }
+            if (!departureStopInfo || !arrivalStopInfo) continue;
             
             let departureTime: number;
             let arrivalTime: number;
@@ -502,29 +500,15 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
             if (departureSeq < arrivalSeq) {
               departureTime = departureStopInfo.departure_time;
               arrivalTime = arrivalStopInfo.arrival_time;
-              console.log(`  → Departure (seq ${departureSeq}) before Arrival (seq ${arrivalSeq})`);
             } else {
-              console.log(`  ⚠️ Warning: Departure (seq ${departureSeq}) after Arrival (seq ${arrivalSeq}) - swapping`);
               departureTime = arrivalStopInfo.departure_time;
               arrivalTime = departureStopInfo.arrival_time;
             }
             
-            if (!departureTime || departureTime === 0) {
-              console.log(`  ❌ No departure time`);
-              continue;
-            }
-            
-            if (!arrivalTime || arrivalTime === 0) {
-              console.log(`  ❌ No arrival time`);
-              continue;
-            }
+            if (!departureTime || !arrivalTime) continue;
             
             const travelMinutes = Math.round((arrivalTime - departureTime) / 60);
-            
-            if (travelMinutes <= 0) {
-              console.log(`  ❌ Invalid travel time: ${travelMinutes} minutes`);
-              continue;
-            }
+            if (travelMinutes <= 0) continue;
             
             allSchedules.push({
               trip_id: tripId,
@@ -535,15 +519,10 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
               arrival_stop: arrivalStop.stop_id,
               travel_time_minutes: travelMinutes
             });
-            
-            console.log(`  ✅ Valid schedule: Depart ${secondsToTimeString(departureTime)} -> Arrive ${secondsToTimeString(arrivalTime)} (${travelMinutes} min)`);
-            
           } catch (err) {
             console.error(`Error processing trip ${tripId}:`, err);
           }
         }
-        
-        console.log(`\n📊 Found ${allSchedules.length} valid schedules out of ${tripIds.length} trips`);
         
         allSchedules.sort((a, b) => a.departure_time - b.departure_time);
         
@@ -551,12 +530,10 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
         let finalSchedules = allSchedules;
         if (isToday) {
           finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
-          console.log(`⏰ Filtered for today: ${allSchedules.length} -> ${finalSchedules.length}`);
         }
         
         setSchedulesWithArrival(finalSchedules);
         setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-        
       } else {
         setShowArrivalTime(false);
         const allSchedules: ScheduleItem[] = [];
@@ -564,11 +541,7 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
         for (const tripId of tripIds) {
           try {
             const stopTime = await dbService.getStopTime(tripId, departureStop.stop_id);
-            
-            if (!stopTime || !stopTime.departure_time) {
-              console.log(`  ❌ No departure time for trip ${tripId}`);
-              continue;
-            }
+            if (!stopTime || !stopTime.departure_time) continue;
             
             allSchedules.push({
               trip_id: tripId,
@@ -576,15 +549,10 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
               destination: selectedRoute.route_short_name,
               stop_sequence: 0
             });
-            
-            console.log(`  ✅ Departure time: ${secondsToTimeString(stopTime.departure_time)}`);
-            
           } catch (err) {
             console.error(`Error processing trip ${tripId}:`, err);
           }
         }
-        
-        console.log(`\n📊 Found ${allSchedules.length} departure schedules`);
         
         allSchedules.sort((a, b) => a.departure_time - b.departure_time);
         
@@ -592,15 +560,11 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
         let finalSchedules = allSchedules;
         if (isToday) {
           finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
-          console.log(`⏰ Filtered for today: ${allSchedules.length} -> ${finalSchedules.length}`);
         }
         
         setSchedule(finalSchedules);
         setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
       }
-      
-      console.log(`${'='.repeat(60)}\n`);
-      
     } catch (error) {
       console.error('Failed to load schedule:', error);
       Alert.alert('Error', 'Failed to load schedule. Please try again.');
@@ -618,7 +582,16 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
 
   const getFormattedRouteLabel = (routeGroup: RouteGroup): string => {
     const routeType = routeGroup.isBus ? '🚌 Bus' : '🚆 Train';
-    return `${routeGroup.routeNumber} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
+    let displayNumber = routeGroup.routeNumber;
+    
+    // For bus routes, show the full variant (e.g., "21", "21B", "21C")
+    // For trains, just show the number
+    if (!routeGroup.isBus) {
+      // Trains might have numbers like "01", "02" - format them nicely
+      displayNumber = routeGroup.routeNumber;
+    }
+    
+    return `${displayNumber} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
   };
 
   const routeItems = routeGroups.map((rg: RouteGroup) => ({
@@ -654,7 +627,6 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
       component: (
         <View style={styles.header}>
           <Text style={styles.title}>GO Transit Schedules</Text>
-          <Text style={styles.subtitle}>Real-time Departures</Text>
         </View>
       ),
     });
@@ -678,37 +650,42 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
             }}
             value={selectedRouteGroup?.routeNumber}
           />
-          {selectedRouteGroup && (
-            <View style={styles.routeTypeBadge}>
-              <Text style={[styles.routeTypeText, selectedRouteGroup.isBus ? styles.busText : styles.trainText]}>
-                {selectedRouteGroup.isBus ? '🚌 Bus Service' : '🚆 Train Service'}
-              </Text>
-            </View>
-          )}
         </View>
       ),
     });
 
-    if (selectedRouteGroup && !selectedRoute) {
+    if (selectedRouteGroup) {
       sections.push({
-        key: 'directionSelection',
+        key: 'directionToggle',
         component: (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Direction</Text>
             <View style={styles.toggleContainer}>
               <TouchableOpacity
-                style={[styles.toggleButton, selectedDirection === 'inbound' && styles.toggleButtonActive]}
+                style={[
+                  styles.toggleButton, 
+                  selectedDirection === 'inbound' && styles.toggleButtonActive
+                ]}
                 onPress={() => handleDirectionSelect('inbound')}
               >
-                <Text style={[styles.toggleButtonText, selectedDirection === 'inbound' && styles.toggleButtonTextActive]}>
+                <Text style={[
+                  styles.toggleButtonText, 
+                  selectedDirection === 'inbound' && styles.toggleButtonTextActive
+                ]}>
                   ⬇️ To Union
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.toggleButton, selectedDirection === 'outbound' && styles.toggleButtonActive]}
+                style={[
+                  styles.toggleButton, 
+                  selectedDirection === 'outbound' && styles.toggleButtonActive
+                ]}
                 onPress={() => handleDirectionSelect('outbound')}
               >
-                <Text style={[styles.toggleButtonText, selectedDirection === 'outbound' && styles.toggleButtonTextActive]}>
+                <Text style={[
+                  styles.toggleButtonText, 
+                  selectedDirection === 'outbound' && styles.toggleButtonTextActive
+                ]}>
                   ⬆️ Leave Union
                 </Text>
               </TouchableOpacity>
@@ -720,46 +697,30 @@ const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise
 
     if (selectedRoute && selectedDirection) {
       sections.push({
-        key: 'routeControls',
+        key: 'mapControls',
         component: (
-          <>
-            <View style={styles.selectedDirectionIndicator}>
-              <Text style={styles.selectedDirectionText}>
-                {selectedDirection === 'inbound' ? '⬇️ To Union Station' : '⬆️ Away from Union Station'}
+          <View style={styles.mapToggleContainer}>
+            <TouchableOpacity 
+              style={[styles.mapToggleButton, showMap && styles.mapToggleButtonActive]} 
+              onPress={() => setShowMap(!showMap)}
+            >
+              <Text style={[styles.mapToggleText, showMap && styles.mapToggleTextActive]}>
+                {showMap ? '📋 Hide Map' : '🗺️ Show Route Map'}
               </Text>
-              <Text style={styles.routeIdText}>
-                {selectedRoute.variant || selectedRoute.route_short_name}
-              </Text>
-              <TouchableOpacity style={styles.changeDirectionButton} onPress={() => { 
-                setSelectedDirection(null); 
-                setSelectedRoute(null); 
-                setDepartureStop(null); 
-                setArrivalStop(null); 
-                setStops([]); 
-                setShowMap(false); 
-              }}>
-                <Text style={styles.changeDirectionText}>Change</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.mapToggleContainer}>
-              <TouchableOpacity style={[styles.mapToggleButton, showMap && styles.mapToggleButtonActive]} onPress={() => setShowMap(!showMap)}>
-                <Text style={[styles.mapToggleText, showMap && styles.mapToggleTextActive]}>
-                  {showMap ? '📋 Hide Map' : '🗺️ Show Route Map'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-            {showMap && selectedRoute && (
-              <RouteMapView
-                routeId={selectedRoute.route_id}
-                routeShortName={selectedRoute.route_short_name}
-                variant={selectedRouteGroup?.variant}
-                selectedDate={selectedDate}
-                visible={showMap}
-                onClose={() => setShowMap(false)}
-                onSelectStop={handleMapStopSelect}
-              />
-            )}
-          </>
+            </TouchableOpacity>
+              {showMap && (
+                <RouteMapView
+                  routeId={selectedRoute.route_id}
+                  routeShortName={selectedRoute.route_short_name}
+                  variant={selectedRouteGroup?.variant}
+                  selectedDate={selectedDate}
+                  direction={selectedDirection || undefined}  // Add this line
+                  visible={showMap}
+                  onClose={() => setShowMap(false)}
+                  onSelectStop={handleMapStopSelect}
+                />
+              )}
+          </View>
         ),
       });
     }
@@ -940,30 +901,17 @@ const styles = StyleSheet.create({
   loaderContainer: { marginTop: 20, alignItems: 'center', padding: 20 },
   header: { backgroundColor: '#00A1E0', padding: 20, alignItems: 'center' },
   title: { fontSize: 24, fontWeight: 'bold', color: '#fff' },
-  subtitle: { fontSize: 14, color: '#fff', marginTop: 5 },
-  headerButtons: { flexDirection: 'row', marginTop: 10, gap: 8 },
-  resetButton: { backgroundColor: 'rgba(255,255,255,0.3)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 },
-  resetButtonText: { color: '#fff', fontSize: 12, fontWeight: '600' },
   section: { backgroundColor: '#fff', margin: 15, padding: 15, borderRadius: 10, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
   dateButton: { backgroundColor: '#f0f0f0', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
   dateButtonText: { fontSize: 14, color: '#00A1E0', fontWeight: '600' },
-  routeTypeBadge: { marginTop: 10, paddingVertical: 6, paddingHorizontal: 12, borderRadius: 20, alignSelf: 'flex-start', backgroundColor: '#f5f5f5' },
-  routeTypeText: { fontSize: 14, fontWeight: '600' },
-  trainText: { color: '#00A1E0' },
-  busText: { color: '#FF6B35' },
   toggleContainer: { flexDirection: 'row', backgroundColor: '#f0f0f0', borderRadius: 30, padding: 4 },
   toggleButton: { flex: 1, paddingVertical: 12, borderRadius: 25, alignItems: 'center', backgroundColor: 'transparent' },
   toggleButtonActive: { backgroundColor: '#00A1E0' },
   toggleButtonText: { fontSize: 14, fontWeight: '600', color: '#666' },
   toggleButtonTextActive: { color: '#fff' },
-  selectedDirectionIndicator: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#00A1E0', marginHorizontal: 15, marginTop: 5, padding: 12, borderRadius: 8 },
-  selectedDirectionText: { color: '#fff', fontSize: 14, fontWeight: '600' },
-  routeIdText: { color: '#fff', fontSize: 12, opacity: 0.8 },
-  changeDirectionButton: { backgroundColor: 'rgba(255,255,255,0.3)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
-  changeDirectionText: { color: '#fff', fontSize: 12, fontWeight: '600' },
-  mapToggleContainer: { marginHorizontal: 15, marginTop: 5, marginBottom: 10 },
+  mapToggleContainer: { marginHorizontal: 15, marginBottom: 10 },
   mapToggleButton: { backgroundColor: '#f0f0f0', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 25, alignItems: 'center', borderWidth: 1, borderColor: '#ddd' },
   mapToggleButtonActive: { backgroundColor: '#00A1E0', borderColor: '#00A1E0' },
   mapToggleText: { fontSize: 14, fontWeight: '600', color: '#666' },
@@ -985,5 +933,4 @@ const styles = StyleSheet.create({
   arrivalTime: { fontSize: 16, fontWeight: '600', color: '#2E7D32' },
   waitTime: { fontSize: 12, color: '#666' },
   scheduleDestination: { fontSize: 14, color: '#333', textAlign: 'right', flex: 1, marginLeft: 12 },
-  defaultBadge: { fontSize: 11, color: '#2E7D32', marginTop: 8, textAlign: 'center' },
 });

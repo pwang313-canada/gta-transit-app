@@ -1,5 +1,11 @@
+import { Stack } from 'expo-router';
 import HomeScreen from '../src/screens/HomeScreen';
 
 export default function Index() {
-  return <HomeScreen />;
+  return (
+    <>
+      <Stack.Screen options={{ headerShown: false }} />
+      <HomeScreen />
+    </>
+  );
 }
