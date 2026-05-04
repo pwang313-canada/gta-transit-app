@@ -101,8 +101,11 @@ export default function HomeScreen() {
   }, [selectedRouteGroup]);
 
   useEffect(() => {
-    loadRoutesWithDirections();
-    dbService.initializeDatabase();
+      const init = async () => {
+          await dbService.initializeDatabase();
+          await loadRoutesWithDirections();
+      };
+      init();
   }, []);
 
   useEffect(() => {
