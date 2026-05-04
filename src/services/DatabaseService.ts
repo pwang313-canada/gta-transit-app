@@ -385,11 +385,11 @@ async getShapeForRoute(routeId: string | number, date?: Date, variant?: string):
     try {
       console.log('\n========== GET SHAPE FOR ROUTE ==========');
       console.log(`Route ID: "${routeIdStr}"`);
+      console.log(`Variant: "${variant || 'none'}"`);
       
-      // Don't filter by service_id - shapes are the same regardless of date
-      // Just get the shape from any trip for this route
+      // Get shape_id from a trip for this route, matching variant for buses
       let tripQuery = `
-        SELECT DISTINCT t.shape_id
+        SELECT DISTINCT t.shape_id, t.route_variant
         FROM trips t
         WHERE t.route_id = ?
           AND t.shape_id IS NOT NULL
@@ -398,6 +398,13 @@ async getShapeForRoute(routeId: string | number, date?: Date, variant?: string):
       
       const tripParams: any[] = [routeIdStr];
       
+      // If variant is provided (for buses), filter by it
+      if (variant && typeof variant === 'string' && variant.trim() !== '' && variant !== 'none') {
+        tripQuery += ` AND t.route_variant = ?`;
+        tripParams.push(variant);
+        console.log(`Filtering by variant: ${variant}`);
+      }
+      
       tripQuery += ` LIMIT 1`;
       
       console.log(`Shape query: ${tripQuery}`);
@@ -405,35 +412,30 @@ async getShapeForRoute(routeId: string | number, date?: Date, variant?: string):
       
       const tripResult = await db.getAllAsync<any>(tripQuery, tripParams);
       
+      // If no shape found with variant, try without variant
       if (tripResult.length === 0 || !tripResult[0].shape_id) {
-        console.log('❌ No shape found for this route, trying by route_short_name...');
-        
-        // Try finding shape by route_short_name for trains
-        const shortNameQuery = `
-          SELECT DISTINCT t.shape_id
-          FROM trips t
-          INNER JOIN routes r ON t.route_id = r.route_id
-          WHERE r.route_short_name = (
-            SELECT r2.route_short_name FROM routes r2 WHERE r2.route_id = ?
-          )
-          AND t.shape_id IS NOT NULL
-          AND t.shape_id != ''
-          LIMIT 1
-        `;
-        
-        const shortNameResult = await db.getAllAsync<any>(shortNameQuery, [routeIdStr]);
-        
-        if (shortNameResult.length === 0 || !shortNameResult[0].shape_id) {
-          console.log('❌ Still no shape found');
-          return [];
+        if (variant) {
+          console.log('No shape with variant, trying without...');
+          const fallbackResult = await db.getAllAsync<any>(
+            `SELECT DISTINCT t.shape_id FROM trips t WHERE t.route_id = ? AND t.shape_id IS NOT NULL AND t.shape_id != '' LIMIT 1`,
+            [routeIdStr]
+          );
+          
+          if (fallbackResult.length === 0 || !fallbackResult[0].shape_id) {
+            console.log('❌ Still no shape found');
+            return [];
+          }
+          
+          console.log(`✅ Found shape (fallback): ${fallbackResult[0].shape_id}`);
+          return await this.getShapePoints(fallbackResult[0].shape_id);
         }
         
-        console.log(`✅ Found shape by route_short_name: ${shortNameResult[0].shape_id}`);
-        return await this.getShapePoints(shortNameResult[0].shape_id);
+        console.log('❌ No shape found for this route');
+        return [];
       }
       
       const shapeId = tripResult[0].shape_id;
-      console.log(`✅ Found shape_id: ${shapeId}`);
+      console.log(`✅ Found shape_id: ${shapeId} (variant: ${tripResult[0].route_variant || 'none'})`);
       
       return await this.getShapePoints(shapeId);
       

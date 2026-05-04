@@ -34,7 +34,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     }
   }, [visible, routeId, variant, selectedDate]);
 
-  const loadRouteGeometry = async () => {
+const loadRouteGeometry = async () => {
     try {
       setLoading(true);
       setError(null);
@@ -47,10 +47,10 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       console.log('Date:', date.toDateString());
       console.log('Variant:', variant);
       
-      // Load stops (date-dependent) and shape (not date-dependent) in parallel
+      // Pass variant to getShapeForRoute for bus routes
       const [stopsList, shapeData] = await Promise.all([
         dbService.getStopsByRoute(routeId, variant || undefined, date),
-        dbService.getShapeForRoute(routeId)  // Don't pass date - shapes are the same
+        dbService.getShapeForRoute(routeId, undefined, variant || undefined)  // Pass variant here
       ]);
       
       // Set shape coordinates
