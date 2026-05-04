@@ -708,17 +708,18 @@ const loadRoutesWithDirections = async (): Promise<void> => {
                 {showMap ? '📋 Hide Map' : '🗺️ Show Route Map'}
               </Text>
             </TouchableOpacity>
-            {showMap && (
-              <RouteMapView
-                routeId={selectedRoute.route_id}
-                routeShortName={selectedRoute.route_short_name}
-                variant={selectedRouteGroup?.variant}
-                selectedDate={selectedDate}
-                visible={showMap}
-                onClose={() => setShowMap(false)}
-                onSelectStop={handleMapStopSelect}
-              />
-            )}
+              {showMap && (
+                <RouteMapView
+                  routeId={selectedRoute.route_id}
+                  routeShortName={selectedRoute.route_short_name}
+                  variant={selectedRouteGroup?.variant}
+                  selectedDate={selectedDate}
+                  direction={selectedDirection || undefined}  // Add this line
+                  visible={showMap}
+                  onClose={() => setShowMap(false)}
+                  onSelectStop={handleMapStopSelect}
+                />
+              )}
           </View>
         ),
       });

@@ -9,6 +9,7 @@ interface RouteMapViewProps {
   routeShortName: string;
   variant?: string;
   selectedDate?: Date;
+  direction?: 'inbound' | 'outbound'; // Add direction prop
   visible: boolean;
   onClose: () => void;
   onSelectStop: (stop: any, type: 'departure' | 'arrival') => void;
@@ -19,6 +20,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
   routeShortName,
   variant,
   selectedDate,
+  direction,
   visible,
   onClose,
   onSelectStop,
@@ -33,7 +35,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     if (visible && routeId) {
       loadRouteGeometry();
     }
-  }, [visible, routeId, variant, selectedDate]);
+  }, [visible, routeId, variant, selectedDate, direction]);
 
   const loadRouteGeometry = async () => {
     try {
@@ -47,6 +49,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       console.log('Route ID:', routeId);
       console.log('Date:', date.toDateString());
       console.log('Variant:', variant);
+      console.log('Direction:', direction);
       
       // First, get stops for the route
       let stopsList = await dbService.getStopsByRoute(routeId, variant || undefined, date);
@@ -100,14 +103,22 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
           setError('No stops with valid coordinates found for this route');
           setStops([]);
         } else {
-          setStops(stopsWithCoords);
-          console.log(`✅ Loaded ${stopsWithCoords.length} stops with valid coordinates`);
-          
-          // Log first and last stop for debugging
-          if (stopsWithCoords.length > 0) {
-            console.log(`First stop: ${stopsWithCoords[0].stop_name} at (${stopsWithCoords[0].latitude}, ${stopsWithCoords[0].longitude})`);
-            console.log(`Last stop: ${stopsWithCoords[stopsWithCoords.length - 1].stop_name} at (${stopsWithCoords[stopsWithCoords.length - 1].latitude}, ${stopsWithCoords[stopsWithCoords.length - 1].longitude})`);
+          // For outbound direction, reverse the stops order so first stop is departure (Union)
+          let orderedStops = stopsWithCoords;
+          if (direction === 'outbound') {
+            // Reverse the stops to show departure (Union) first
+            orderedStops = [...stopsWithCoords].reverse();
+            console.log('Outbound route: Reversed stops order for display');
+            console.log(`First stop (departure): ${orderedStops[0].stop_name}`);
+            console.log(`Last stop (arrival): ${orderedStops[orderedStops.length - 1].stop_name}`);
+          } else {
+            console.log(`Inbound route: Stops in original order`);
+            console.log(`First stop (departure): ${orderedStops[0].stop_name}`);
+            console.log(`Last stop (arrival): ${orderedStops[orderedStops.length - 1].stop_name}`);
           }
+          
+          setStops(orderedStops);
+          console.log(`✅ Loaded ${orderedStops.length} stops with valid coordinates`);
         }
       } else {
         console.log('❌ No stops found');
@@ -230,6 +241,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       <View style={styles.header}>
         <Text style={styles.title}>
           Route {routeShortName} {variant && variant !== 'none' ? `(${variant})` : ''}
+          {direction === 'inbound' ? ' → Towards Union' : direction === 'outbound' ? ' ← From Union' : ''}
         </Text>
         <TouchableOpacity onPress={onClose} style={styles.closeButton}>
           <Text style={styles.closeButtonText}>✕</Text>
@@ -267,11 +279,15 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
           />
         )}
         
-        {/* Station markers */}
+        {/* Station markers - first and last are start/end based on direction */}
         {stops.map((stop, index) => {
           const isFirst = index === 0;
           const isLast = index === stops.length - 1;
           
+          // For inbound: first stop is departure (green), last stop is Union (red)
+          // For outbound: first stop is Union (green), last stop is destination (red)
+          // This is already handled by reversing the stops array for outbound
+            
           return (
             <Marker
               key={stop.stop_id}
@@ -280,7 +296,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
                 longitude: stop.longitude,
               }}
               title={stop.stop_name}
-              description={`${isFirst ? 'Start' : isLast ? 'End' : `Stop ${index + 1}`} • Tap to select`}
+              description={`${isFirst ? 'Start of journey' : isLast ? 'End of journey' : `Stop ${index + 1}`} • Tap to select`}
               pinColor={isFirst ? 'green' : isLast ? 'red' : '#00A1E0'}
               onPress={() => {
                 Alert.alert(
@@ -310,14 +326,19 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       <View style={styles.legend}>
         <View style={styles.legendRow}>
           <View style={[styles.legendDot, { backgroundColor: 'green' }]} />
-          <Text style={styles.legendText}>Start</Text>
+          <Text style={styles.legendText}>
+            {direction === 'outbound' ? 'Departure (Union)' : 'Departure Station'}
+          </Text>
           <View style={[styles.legendDot, { backgroundColor: 'red' }]} />
-          <Text style={styles.legendText}>End</Text>
+          <Text style={styles.legendText}>
+            {direction === 'outbound' ? 'Destination' : 'Arrival (Union)'}
+          </Text>
           <View style={[styles.legendDot, { backgroundColor: '#00A1E0' }]} />
-          <Text style={styles.legendText}>Station</Text>
+          <Text style={styles.legendText}>Intermediate</Text>
         </View>
         <Text style={styles.legendInfo}>
           {stops.length} stops • {shapeCoordinates.length > 0 ? 'Actual route' : 'Approximate route'}
+          {direction === 'inbound' ? ' • Towards Union Station' : ' • From Union Station'}
         </Text>
       </View>
     </View>
@@ -348,6 +369,7 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: 'bold',
+    flex: 1,
   },
   closeButton: {
     padding: 8,
@@ -371,6 +393,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 4,
+    flexWrap: 'wrap',
   },
   legendDot: {
     width: 10,
@@ -379,7 +402,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 4,
   },
   legendText: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#333',
     marginRight: 12,
   },
