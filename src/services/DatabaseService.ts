@@ -41,24 +41,13 @@ class DatabaseService {
     return DatabaseService.instance;
   }
 
-  async initializeDatabase(forceReload: boolean = false): Promise<boolean> {
-    if (this.isInitialized && this.db && !forceReload) {
+  async initializeDatabase(): Promise<boolean> {
+    if (this.isInitialized && this.db) {
       return true;
     }
 
     try {
       console.log('Initializing database...');
-
-      // 🔥 FORCE RELOAD: Delete old DB so the new bundled one is copied
-      if (forceReload) {
-        try {
-          await SQLite.deleteDatabaseAsync('go_transit.db');
-          console.log('🗑️ Deleted old database file');
-        } catch (e) {
-          // If it doesn't exist, that's fine
-          console.log('No old database to delete (or already deleted)');
-        }
-      }
 
       const loaded = await loadDatabase();
       if (!loaded) {
@@ -71,7 +60,7 @@ class DatabaseService {
         "SELECT name FROM sqlite_master WHERE type='table';"
       );
 
-      console.log('Tables:', tables.map((t: any) => t.name));
+      console.log('Tables:', tables);
 
       if (!tables || tables.length === 0) {
         throw new Error('Database is empty or not loaded correctly');
@@ -89,6 +78,8 @@ class DatabaseService {
     }
   }
 
+  
+  
   private async getDatabase(): Promise<SQLite.SQLiteDatabase> {
     if (this.isInitialized && this.db) {
       return this.db;

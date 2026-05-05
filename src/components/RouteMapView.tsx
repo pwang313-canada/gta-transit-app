@@ -9,6 +9,7 @@ interface RouteMapViewProps {
   routeShortName: string;
   variant?: string;
   selectedDate?: Date;
+  direction?: 'inbound' | 'outbound';
   visible: boolean;
   onClose: () => void;
   onSelectStop: (stop: any, type: 'departure' | 'arrival') => void;
@@ -19,6 +20,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
   routeShortName,
   variant,
   selectedDate,
+  direction,
   visible,
   onClose,
   onSelectStop,
@@ -32,7 +34,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     if (visible && routeId) {
       loadRouteGeometry();
     }
-  }, [visible, routeId, variant, selectedDate]);
+  }, [visible, routeId, variant, selectedDate, direction]);
 
   const loadRouteGeometry = async () => {
     try {
@@ -41,58 +43,78 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       
       const dbService = DatabaseService;
       const date = selectedDate || new Date();
-      
       const effectiveVariant = variant && variant !== routeShortName ? variant : undefined;
       
-      console.log('Loading route geometry...');
+      console.log('=== RouteMapView Load ===');
       console.log('Route ID:', routeId);
-      console.log('Date:', date);
-      console.log('Variant prop:', variant);
+      console.log('Direction prop:', direction);
       console.log('Effective Variant:', effectiveVariant);
       
-      // Load stops and shape data in parallel
       const [stopsList, shapeData] = await Promise.all([
         dbService.getStopsByRoute(routeId, effectiveVariant, date),
         dbService.getShapeForRoute(routeId, date, effectiveVariant)
       ]);
       
-      // Log what came back from the shape query
-      console.log('Shape data returned:', shapeData ? `${shapeData.length} points` : 'null/undefined');
-      if (shapeData && shapeData.length > 0) {
-        console.log('First shape point:', shapeData[0]);
-        console.log('Last shape point:', shapeData[shapeData.length - 1]);
-        setShapeCoordinates(shapeData);
-      } else {
-        console.log('⚠️ No shape data found, will use straight lines between stops');
-        setShapeCoordinates([]);
+      // Process stops
+      let stopsWithCoords = stopsList.map((stop: any) => {
+        if (stop.stop_lat && stop.stop_lon && stop.stop_lat !== 0 && stop.stop_lon !== 0) {
+          return {
+            ...stop,
+            latitude: stop.stop_lat,
+            longitude: stop.stop_lon,
+            hasCoords: true
+          };
+        } else {
+          return {
+            ...stop,
+            latitude: 43.645 + (Math.random() - 0.5) * 0.1,
+            longitude: -79.38 + (Math.random() - 0.5) * 0.1,
+            hasCoords: false
+          };
+        }
+      });
+      
+      // ORIENT stops + shape based on direction
+      // GTFS stop_times are ordered by trip direction. We need to flip them
+      // when the user selects the opposite direction.
+      let shapeCoords = shapeData && shapeData.length > 0 ? [...shapeData] : [];
+      
+      if (direction && stopsWithCoords.length > 1) {
+        const unionIndex = stopsWithCoords.findIndex((s: any) =>
+          s.stop_name && s.stop_name.toLowerCase().includes('union')
+        );
+        
+        console.log('Union found at index:', unionIndex, 'of', stopsWithCoords.length);
+        
+        if (unionIndex !== -1) {
+          const isUnionAtStart = unionIndex === 0;
+          const isUnionAtEnd = unionIndex === stopsWithCoords.length - 1;
+          
+          // Inbound  = To Union   → Union must be at END   (red)
+          // Outbound = From Union → Union must be at START (green)
+          const needsReverse = 
+            (direction === 'inbound' && isUnionAtStart) ||
+            (direction === 'outbound' && isUnionAtEnd);
+          
+          if (needsReverse) {
+            stopsWithCoords.reverse();
+            if (shapeCoords.length > 0) shapeCoords.reverse();
+            console.log('🔄 Reversed stops & shape for direction:', direction);
+          } else {
+            console.log('✅ Stop order already matches direction:', direction);
+          }
+        }
       }
       
-      if (stopsList && stopsList.length > 0) {
-        const stopsWithCoords = stopsList.map((stop: any) => {
-          if (stop.stop_lat && stop.stop_lon && stop.stop_lat !== 0 && stop.stop_lon !== 0) {
-            return {
-              ...stop,
-              latitude: stop.stop_lat,
-              longitude: stop.stop_lon,
-              hasCoords: true
-            };
-          } else {
-            console.warn(`Missing coordinates for: ${stop.stop_name}, using approximate location`);
-            return {
-              ...stop,
-              latitude: 43.645 + (Math.random() - 0.5) * 0.1,
-              longitude: -79.38 + (Math.random() - 0.5) * 0.1,
-              hasCoords: false
-            };
-          }
-        });
-        
-        setStops(stopsWithCoords);
-        console.log(`✅ Loaded ${stopsWithCoords.length} stops for route ${routeId}`);
-      } else {
-        console.log('❌ No stops found');
-        setError('No stops found for this route on selected date');
-      }
+      setStops(stopsWithCoords);
+      setShapeCoordinates(shapeCoords);
+      
+      // Debug log final order
+      stopsWithCoords.forEach((stop: any, idx: number) => {
+        const marker = idx === 0 ? '🟢 START' : idx === stopsWithCoords.length - 1 ? '🔴 END' : '🔵';
+        console.log(`  ${marker} ${idx + 1}. ${stop.stop_name}`);
+      });
+      
     } catch (err) {
       console.error('Error loading route geometry:', err);
       setError('Failed to load route stops');
@@ -169,7 +191,8 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>
-          Route {routeShortName} {displayVariant ? `(${displayVariant})` : ''}
+          {routeShortName} {displayVariant ? `(${displayVariant})` : ''}
+          {direction === 'inbound' ? ' → To Union' : direction === 'outbound' ? ' → From Union' : ''}
         </Text>
         <TouchableOpacity onPress={onClose} style={styles.closeButton}>
           <Text style={styles.closeButtonText}>✕</Text>
@@ -184,7 +207,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
           <Polyline
             coordinates={shapeCoordinates}
             strokeColor="#00A1E0"
-            strokeWidth={3}
+            strokeWidth={4}
             lineCap="round"
             lineJoin="round"
           />
@@ -210,18 +233,18 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
           
           return (
             <Marker
-              key={stop.stop_id}
+              key={`${stop.stop_id}-${index}`}
               coordinate={{
                 latitude: stop.latitude,
                 longitude: stop.longitude,
               }}
               title={stop.stop_name}
-              description={`${isFirst ? 'Start' : isLast ? 'End' : `Stop ${index + 1}`} • Tap to select`}
+              description={`${isFirst ? 'START' : isLast ? 'END' : `Stop ${index + 1}`} • Tap to select`}
               pinColor={isFirst ? 'green' : isLast ? 'red' : '#00A1E0'}
               onPress={() => {
                 Alert.alert(
                   stop.stop_name,
-                  `Stop ${index + 1} of ${stops.length}${!stop.hasCoords ? '\n⚠️ Approximate location' : ''}\n\nSelect this as your:`,
+                  `${isFirst ? '🟢 START' : isLast ? '🔴 END' : `Stop ${index + 1}`}${!stop.hasCoords ? '\n⚠️ Approximate location' : ''}\n\nSelect this as your:`,
                   [
                     {
                       text: 'Departure Station',

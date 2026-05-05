@@ -130,7 +130,7 @@ export default function HomeScreen() {
   useEffect(() => {
     const init = async () => {
       try {
-        const ok = await dbService.initializeDatabase(true);
+        const ok = await dbService.initializeDatabase();
 
         await new Promise(res => setTimeout(res, 100));
 
@@ -832,6 +832,7 @@ export default function HomeScreen() {
                 routeShortName={selectedRoute.route_short_name}
                 variant={selectedRoute?.variant}        // ← FIX: use route's variant, not group's
                 selectedDate={selectedDate}
+                direction={selectedDirection || undefined}
                 visible={showMap}
                 onClose={() => setShowMap(false)}
                 onSelectStop={handleMapStopSelect}
