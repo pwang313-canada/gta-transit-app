@@ -22,6 +22,8 @@ interface NearbyStationsMapProps {
     routeShortName: string;
     variant?: string;
     direction?: 'inbound' | 'outbound';
+    stopId?: string;      // new
+    stopName?: string;    // new
   }) => void;
 }
 
@@ -337,6 +339,8 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
         routeShortName: selectedRouteOnMap.route_short_name,
         variant: selectedRouteOnMap.route_variant,
         direction: selectedRouteOnMap.direction,
+        stopId: selectedStation?.stop_id,      // pass the station
+        stopName: selectedStation?.stop_name,  // pass the station name
       });
       onClose();
     }

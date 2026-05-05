@@ -24,7 +24,7 @@ interface Route {
   direction_id?: number;
   direction?: string;
   variant?: string;
-  isBus?: boolean;  // Add this property
+  isBus?: boolean;
 }
 
 interface Stop {
@@ -59,35 +59,21 @@ interface RouteGroup {
 
 const secondsToTimeString = (seconds: number): string => {
   if (!seconds && seconds !== 0) return '';
-  
-  // Handle times that go beyond 24:00:00 (e.g., 25:30:00 -> 01:30)
   let adjustedSeconds = seconds;
-  if (adjustedSeconds >= 86400) { // 24 hours in seconds
-    adjustedSeconds = adjustedSeconds - 86400;
-  }
-  
+  if (adjustedSeconds >= 86400) adjustedSeconds -= 86400;
   const hours = Math.floor(adjustedSeconds / 3600);
   const minutes = Math.floor((adjustedSeconds % 3600) / 60);
-  
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 };
 
-const formatDate = (date: Date): string => {
-  return date.toLocaleDateString('en-CA');
-};
+const formatDate = (date: Date): string => date.toLocaleDateString('en-CA');
 
-// Helper function to determine direction from trip_id
-// trip_id format: timestamp-route-number
-// Example: 20241201-21-0 (even = inbound/To Union), 20241201-21-1 (odd = outbound/From Union)
 const getDirectionFromTripId = (tripId: string): 'inbound' | 'outbound' | null => {
   const parts = tripId.split('-');
   if (parts.length >= 3) {
     const lastPart = parts[parts.length - 1];
     const num = parseInt(lastPart);
-    if (!isNaN(num)) {
-      // Even number = inbound (To Union), Odd number = outbound (From Union)
-      return num % 2 === 0 ? 'inbound' : 'outbound';
-    }
+    if (!isNaN(num)) return num % 2 === 0 ? 'inbound' : 'outbound';
   }
   return null;
 };
@@ -131,38 +117,24 @@ export default function HomeScreen() {
     const init = async () => {
       try {
         const ok = await dbService.initializeDatabase();
-
         await new Promise(res => setTimeout(res, 100));
-
-        if (!ok) {
-          throw new Error('Database failed to initialize');
-        }
-
+        if (!ok) throw new Error('Database failed to initialize');
         await loadRoutesWithDirections();
-
       } catch (e) {
         console.error('INIT FAILED:', e);
         Alert.alert('Database Error', 'Failed to load database');
       }
     };
-
     init();
   }, []);
 
   useEffect(() => {
-    const loadSchedule = async () => {
-      if (selectedRoute && departureStop) {
-        await loadRecentSchedule();
-      }
-    };
-    loadSchedule();
+    if (selectedRoute && departureStop) loadRecentSchedule();
   }, [selectedRoute, departureStop, arrivalStop, selectedDate]);
 
   const loadRoutesWithDirections = async (): Promise<void> => {
     try {
       setLoading(true);
-      
-      // Get bus variants including those without letters
       const busVariants = await dbService.executeCustomQuery<any>(`
         SELECT DISTINCT 
           r.route_short_name,
@@ -172,19 +144,13 @@ export default function HomeScreen() {
         INNER JOIN trips t ON r.route_id = t.route_id
         WHERE t.route_variant IS NOT NULL 
           AND t.route_variant != ''
-          AND (
-            t.route_variant != r.route_short_name
-            OR r.route_short_name = t.route_variant
-          )
+          AND (t.route_variant != r.route_short_name OR r.route_short_name = t.route_variant)
         ORDER BY t.route_variant
       `);
 
       const groups: { [key: string]: RouteGroup } = {};
-
-      // Process bus variants
       busVariants.forEach((item: any) => {
         const variant = item.route_variant;
-        // Don't skip if it matches the base route number - include it as a separate entry
         if (!groups[variant]) {
           groups[variant] = {
             routeNumber: variant,
@@ -195,10 +161,7 @@ export default function HomeScreen() {
         }
       });
 
-      // Get train routes (exclude all bus variants including the base numbers)
-      // Create a set of all bus route numbers to exclude
       const busRouteNumbers = new Set(Object.keys(groups));
-      
       const trainRoutes = await dbService.executeCustomQuery<any>(`
         SELECT DISTINCT 
           r.route_short_name,
@@ -230,21 +193,14 @@ export default function HomeScreen() {
 
       const groupedRoutes = Object.values(groups);
       groupedRoutes.sort((a, b) => {
-        // Custom sort for bus routes like 21, 21B, 21C
-        if (a.isBus !== b.isBus) {
-          return a.isBus ? -1 : 1;
-        }
+        if (a.isBus !== b.isBus) return a.isBus ? -1 : 1;
         if (a.isBus) {
           const aMatch = a.routeNumber.match(/(\d+)([A-Z]*)/);
           const bMatch = b.routeNumber.match(/(\d+)([A-Z]*)/);
-          
           if (aMatch && bMatch) {
             const aNum = parseInt(aMatch[1]);
             const bNum = parseInt(bMatch[1]);
-            if (aNum !== bNum) {
-              return aNum - bNum;
-            }
-            // For same number, sort base number (no letter) before letter variants
+            if (aNum !== bNum) return aNum - bNum;
             const aLetter = aMatch[2] || '';
             const bLetter = bMatch[2] || '';
             if (aLetter === '' && bLetter !== '') return -1;
@@ -257,7 +213,6 @@ export default function HomeScreen() {
       });
 
       setRouteGroups(groupedRoutes);
-      console.log('Loaded routes:', groupedRoutes.map(r => `${r.routeNumber} (${r.isBus ? 'Bus' : 'Train'})`));
     } catch (error) {
       console.error('Failed to load routes:', error);
       Alert.alert('Error', 'Failed to load transit data');
@@ -280,27 +235,24 @@ export default function HomeScreen() {
     setStops([]);
   };
 
-  const findUnionStation = (stopsList: Stop[]): Stop | null => {
-    return stopsList.find(stop => 
+  const findUnionStation = (stopsList: Stop[]): Stop | null =>
+    stopsList.find(stop => 
       stop.stop_name.toLowerCase().includes('union station') ||
       stop.stop_name.toLowerCase().includes('union go') ||
       stop.stop_name.toLowerCase() === 'union'
     ) || null;
-  };
 
-  // Get direction filter based on route type and user selection
-  const getDirectionFilter = (direction: 'inbound' | 'outbound', isBus: boolean): number => {
-    if (isBus) {
-      // For buses: inbound (To Union) = 0, outbound (From Union) = 1
-      return direction === 'inbound' ? 0 : 1;
-    } else {
-      // For trains: inbound (To Union) = 1, outbound (From Union) = 0
-      return direction === 'inbound' ? 1 : 0;
-    }
-  };
+  const getDirectionFilter = (direction: 'inbound' | 'outbound', isBus: boolean): number =>
+    isBus ? (direction === 'inbound' ? 0 : 1) : (direction === 'inbound' ? 1 : 0);
 
-  const handleDirectionSelect = async (direction: 'inbound' | 'outbound'): Promise<void> => {
-    if (!selectedRouteGroup) return;
+  // Updated: accepts optional routeGroup and selectedStop
+  const handleDirectionSelect = async (
+    direction: 'inbound' | 'outbound',
+    routeGroup?: RouteGroup,
+    selectedStop?: { stop_id: string; stop_name: string }
+  ): Promise<void> => {
+    const effectiveRouteGroup = routeGroup || selectedRouteGroup;
+    if (!effectiveRouteGroup) return;
 
     setSelectedDirection(direction);
     setSelectedRoute(null);
@@ -310,77 +262,49 @@ export default function HomeScreen() {
     setShowArrivalTime(false);
     setShowMap(false);
     setStops([]);
+    setDepartureStop(null);
+    setArrivalStop(null);
 
     try {
       const serviceId = formatDate(selectedDate).replace(/-/g, '');
-      
-      // Parse route number correctly
-      const routeNumberMatch = selectedRouteGroup.routeNumber.match(/^(\d+)([A-Z]*)$/);
-      const baseRouteNumber = routeNumberMatch ? routeNumberMatch[1] : selectedRouteGroup.routeNumber;
+      const routeNumberMatch = effectiveRouteGroup.routeNumber.match(/^(\d+)([A-Z]*)$/);
+      const baseRouteNumber = routeNumberMatch ? routeNumberMatch[1] : effectiveRouteGroup.routeNumber;
       const routeLetter = routeNumberMatch ? routeNumberMatch[2] : '';
-      
-      // Get the correct direction_id based on route type
-      const directionId = getDirectionFilter(direction, selectedRouteGroup.isBus);
+      const directionId = getDirectionFilter(direction, effectiveRouteGroup.isBus);
       
       let routeQuery: string;
       let queryParams: (string | number)[];
-      
-      if (selectedRouteGroup.isBus) {
-        // For buses, we need to match the exact variant including base numbers
-        if (routeLetter === '') {
-          // This is a base route like "21" (no letter)
-          routeQuery = `
-            SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
-            FROM routes r
-            INNER JOIN trips t ON r.route_id = t.route_id
-            WHERE r.route_short_name = ?
-              AND t.route_variant = ?
-              AND t.service_id = ?
-              AND t.direction_id = ?
-            ORDER BY r.route_id DESC
-          `;
-          queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, directionId];
-        } else {
-          // This is a variant like "21B" or "21C"
-          routeQuery = `
-            SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
-            FROM routes r
-            INNER JOIN trips t ON r.route_id = t.route_id
-            WHERE r.route_short_name = ?
-              AND t.route_variant = ?
-              AND t.service_id = ?
-              AND t.direction_id = ?
-            ORDER BY r.route_id DESC
-          `;
-          queryParams = [baseRouteNumber, selectedRouteGroup.routeNumber, serviceId, directionId];
-        }
+      if (effectiveRouteGroup.isBus) {
+        routeQuery = `
+          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
+          FROM routes r
+          INNER JOIN trips t ON r.route_id = t.route_id
+          WHERE r.route_short_name = ? AND t.route_variant = ? AND t.service_id = ? AND t.direction_id = ?
+          ORDER BY r.route_id DESC
+        `;
+        queryParams = [baseRouteNumber, effectiveRouteGroup.routeNumber, serviceId, directionId];
       } else {
-        // For trains
         routeQuery = `
           SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
           FROM routes r
           INNER JOIN trips t ON r.route_id = t.route_id
-          WHERE r.route_short_name = ?
-            AND t.service_id = ?
-            AND t.direction_id = ?
+          WHERE r.route_short_name = ? AND t.service_id = ? AND t.direction_id = ?
           ORDER BY r.route_id DESC
         `;
         queryParams = [baseRouteNumber, serviceId, directionId];
       }
       
       const availableRoutes = await dbService.executeCustomQuery<any>(routeQuery, queryParams);
-      
       if (availableRoutes.length === 0) {
-        Alert.alert('No Service', `No ${direction} service for ${selectedRouteGroup.routeNumber} on ${selectedDate.toDateString()}`);
+        Alert.alert('No Service', `No ${direction} service for ${effectiveRouteGroup.routeNumber} on ${selectedDate.toDateString()}`);
         setSelectedDirection(null);
         return;
       }
       
       let selectedRouteData = null;
-      if (selectedRouteGroup.isBus) {
+      if (effectiveRouteGroup.isBus) {
         for (const route of availableRoutes) {
-          const isValid = dbService.isRouteValidForDate(route.route_id, selectedDate);
-          if (isValid) {
+          if (dbService.isRouteValidForDate(route.route_id, selectedDate)) {
             selectedRouteData = route;
             break;
           }
@@ -390,7 +314,7 @@ export default function HomeScreen() {
       }
       
       if (!selectedRouteData) {
-        Alert.alert('No Valid Route', `No valid route found for ${selectedRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
+        Alert.alert('No Valid Route', `No valid route found for ${effectiveRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
         return;
       }
       
@@ -399,31 +323,17 @@ export default function HomeScreen() {
         route_short_name: selectedRouteData.route_short_name,
         route_long_name: selectedRouteData.route_long_name,
         direction_id: directionId,
-        variant: selectedRouteGroup.isBus ? selectedRouteGroup.variant : undefined,  // ← FIX: only for buses
-        isBus: selectedRouteGroup.isBus
+        variant: effectiveRouteGroup.isBus ? effectiveRouteGroup.variant : undefined,
+        isBus: effectiveRouteGroup.isBus
       };
-      
       setSelectedRoute(selectedRouteObj);
       
-      console.log(`=== Direction Selection ===`);
-      console.log(`Route: ${selectedRouteObj.route_short_name}`);
-      console.log(`Type: ${selectedRouteGroup.isBus ? 'Bus' : 'Train'}`);
-      console.log(`Direction: ${direction}`);
-      console.log(`Direction ID used in query: ${directionId}`);
-      console.log(`Date: ${selectedDate.toDateString()}`);
-      console.log(`Service ID: ${serviceId}`);
-      
-      let variantParam: string = '';
-      if (selectedRouteGroup.isBus && selectedRouteGroup.variant) {
-        variantParam = selectedRouteGroup.variant;
-      }
-      
+      const variantParam = effectiveRouteGroup.isBus ? effectiveRouteGroup.variant : '';
       const stopsList = await dbService.getStopsByRoute(
         selectedRouteData.route_id, 
         variantParam,
         selectedDate
       );
-      
       const typedStops: Stop[] = stopsList.map((stop: any) => ({
         stop_id: stop.stop_id,
         stop_name: stop.stop_name,
@@ -432,20 +342,30 @@ export default function HomeScreen() {
       
       const unionStop = findUnionStation(typedStops);
       
+      // Pre-select stops based on direction and optional selectedStop from map
       if (direction === 'inbound') {
-        setArrivalStop(unionStop || null);
-        setDepartureStop(null);
-        console.log(`Inbound: Set arrival stop to Union Station`);
+        setArrivalStop(unionStop);
+        if (selectedStop) {
+          const found = typedStops.find(s => s.stop_id === selectedStop.stop_id);
+          setDepartureStop(found || null);
+          if (!found) console.warn(`Selected stop ${selectedStop.stop_name} not found in stops list`);
+        } else {
+          setDepartureStop(null);
+        }
       } else {
-        setDepartureStop(unionStop || null);
-        setArrivalStop(null);
-        console.log(`Outbound: Set departure stop to Union Station`);
+        setDepartureStop(unionStop);
+        if (selectedStop) {
+          const found = typedStops.find(s => s.stop_id === selectedStop.stop_id);
+          setArrivalStop(found || null);
+          if (!found) console.warn(`Selected stop ${selectedStop.stop_name} not found in stops list`);
+        } else {
+          setArrivalStop(null);
+        }
       }
       
       if (typedStops.length === 0) {
-        Alert.alert('No Stops', `No stops found for ${selectedRouteGroup.routeNumber} on this date.`);
+        Alert.alert('No Stops', `No stops found for ${effectiveRouteGroup.routeNumber} on this date.`);
       }
-      
     } catch (error) {
       console.error('Failed to load stops:', error);
       Alert.alert('Error', 'Failed to load stops. Please try again.');
@@ -455,7 +375,7 @@ export default function HomeScreen() {
   const handleMapStopSelect = (stop: any, type: 'departure' | 'arrival') => {
     if (type === 'departure') {
       setDepartureStop(stop ? { stop_id: stop.stop_id, stop_name: stop.stop_name } : null);
-    } else if (type === 'arrival') {
+    } else {
       setArrivalStop(stop ? { stop_id: stop.stop_id, stop_name: stop.stop_name } : null);
     }
   };
@@ -465,30 +385,26 @@ export default function HomeScreen() {
     routeShortName: string;
     variant?: string;
     direction?: 'inbound' | 'outbound';
+    stopId?: string;
+    stopName?: string;
   }) => {
     console.log('Selected route from map:', route);
-    
-    // Find the route group
     const routeGroup = routeGroups.find(rg => rg.routeNumber === route.routeShortName);
-    if (routeGroup) {
-      setSelectedRouteGroup(routeGroup);
-      setSelectedDirection(route.direction || null);
-      
-      // Small delay to ensure state updates
-      setTimeout(() => {
-        if (route.direction) {
-          handleDirectionSelect(route.direction);
-        }
-      }, 100);
-    } else {
-      Alert.alert('Route Not Found', `Could not find route ${route.routeShortName} in the list`);
+    if (!routeGroup) {
+      Alert.alert('Route Not Found', `Could not find route ${route.routeShortName}`);
+      return;
     }
+    // Set the UI state immediately
+    setSelectedRouteGroup(routeGroup);
+    setSelectedDirection(route.direction || null);
+    
+    const selectedStop = route.stopId ? { stop_id: route.stopId, stop_name: route.stopName || '' } : undefined;
+    // Call handleDirectionSelect directly with the routeGroup to avoid state staleness
+    handleDirectionSelect(route.direction!, routeGroup, selectedStop);
   };
 
   const onDateChange = (event: any, selectedDate?: Date) => {
-    if (Platform.OS === 'android') {
-      setShowDatePicker(false);
-    }
+    if (Platform.OS === 'android') setShowDatePicker(false);
     if (selectedDate) {
       setSelectedDate(selectedDate);
       setSelectedDirection(null);
@@ -504,7 +420,6 @@ export default function HomeScreen() {
 
   const loadRecentSchedule = async (): Promise<void> => {
     if (!selectedRoute || !departureStop) return;
-
     setLoadingSchedule(true);
     try {
       const queryDate = selectedDate;
@@ -512,60 +427,24 @@ export default function HomeScreen() {
       const isToday = queryDate.toDateString() === today.toDateString();
       const serviceId = formatDate(queryDate).replace(/-/g, '');
       
-      console.log(`\n=== Loading Schedule ===`);
-      console.log(`Selected Date: ${queryDate.toDateString()}`);
-      console.log(`Service ID: ${serviceId}`);
-      console.log(`Route ID: ${selectedRoute.route_id}`);
-      console.log(`Route Type: ${selectedRoute.isBus ? 'Bus' : 'Train'}`);
-      console.log(`User selected direction: ${selectedDirection}`);
-      console.log(`Direction ID stored: ${selectedRoute.direction_id}`);
-      console.log(`Departure Stop: ${departureStop.stop_name} (${departureStop.stop_id})`);
-      if (arrivalStop) {
-        console.log(`Arrival Stop: ${arrivalStop.stop_name} (${arrivalStop.stop_id})`);
-      }
-      
-      // Query trips with the direction_id
       let tripsQuery = `
         SELECT trip_id, route_variant, direction_id
         FROM trips 
-        WHERE route_id = ? 
-          AND service_id = ?
-          AND direction_id = ?
+        WHERE route_id = ? AND service_id = ? AND direction_id = ?
       `;
-      
       const queryParams: (string | number)[] = [
-        selectedRoute.route_id, 
-        serviceId, 
-        selectedRoute.direction_id !== undefined ? selectedRoute.direction_id : 0
+        selectedRoute.route_id, serviceId, selectedRoute.direction_id ?? 0
       ];
-      
       if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
         tripsQuery += ` AND route_variant = ?`;
         queryParams.push(selectedRoute.variant);
       }
       
-      console.log(`Query params: route_id=${selectedRoute.route_id}, service_id=${serviceId}, direction_id=${selectedRoute.direction_id}`);
-      
       let trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
       
-      // For trains, also verify direction from trip_id to ensure correctness
-      if (selectedRoute.isBus === false && trips.length > 0) {
-        console.log(`Verifying train directions from trip_id...`);
-        const verifiedTrips = trips.filter(trip => {
-          const tripDirection = getDirectionFromTripId(trip.trip_id);
-          console.log(`Trip ${trip.trip_id}: direction from trip_id = ${tripDirection}, expected = ${selectedDirection}`);
-          return tripDirection === selectedDirection;
-        });
-        
-        if (verifiedTrips.length > 0) {
-          console.log(`After verification: ${verifiedTrips.length} trips match the expected direction`);
-          trips = verifiedTrips;
-        } else {
-          console.log(`Warning: No trips matched the expected direction after verification`);
-        }
+      if (!selectedRoute.isBus && trips.length > 0) {
+        trips = trips.filter(trip => getDirectionFromTripId(trip.trip_id) === selectedDirection);
       }
-      
-      console.log(`Found ${trips.length} trips for ${selectedDirection} direction`);
       
       if (trips.length === 0) {
         setLoadingSchedule(false);
@@ -574,27 +453,16 @@ export default function HomeScreen() {
       }
       
       const tripIds = [...new Set(trips.map(t => t.trip_id).filter(id => id && id !== ''))];
-      console.log(`Trip IDs (${tripIds.length}):`, tripIds.slice(0, 5));
       
-      // 🚀 BATCH OPTIMIZATION: Fetch all stop times in 1-2 queries instead of N queries
       if (arrivalStop) {
         setShowArrivalTime(true);
-        
-        // 🚀 SINGLE BATCH QUERY for all trips with both departure and arrival stops
         const stopTimesMap = await dbService.getStopTimesForTripsBatchTwoStops(
-          tripIds,
-          departureStop.stop_id,
-          arrivalStop.stop_id
+          tripIds, departureStop.stop_id, arrivalStop.stop_id
         );
-        
         const allSchedules: TripWithArrival[] = [];
-        
         for (const [tripId, stops] of stopTimesMap.entries()) {
           if (!stops.departure || !stops.arrival) continue;
-          
-          let departureTime: number;
-          let arrivalTime: number;
-          
+          let departureTime: number, arrivalTime: number;
           if (stops.departure.stop_sequence < stops.arrival.stop_sequence) {
             departureTime = stops.departure.departure_time;
             arrivalTime = stops.arrival.arrival_time;
@@ -602,12 +470,9 @@ export default function HomeScreen() {
             departureTime = stops.arrival.departure_time;
             arrivalTime = stops.departure.arrival_time;
           }
-          
           if (!departureTime || !arrivalTime) continue;
-          
           const travelMinutes = Math.round((arrivalTime - departureTime) / 60);
           if (travelMinutes <= 0) continue;
-          
           allSchedules.push({
             trip_id: tripId,
             departure_time: departureTime,
@@ -618,36 +483,17 @@ export default function HomeScreen() {
             travel_time_minutes: travelMinutes
           });
         }
-        
         allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-        
         const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-        
-        let finalSchedules = allSchedules;
-        if (isToday) {
-          finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
-          console.log(`Filtered for today: ${finalSchedules.length} remaining from ${allSchedules.length}`);
-        }
-        
-        console.log(`${selectedDirection} schedules found: ${finalSchedules.length}`);
-        if (finalSchedules.length > 0) {
-          console.log(`First ${selectedDirection} departure: ${secondsToTimeString(finalSchedules[0].departure_time)}`);
-        }
-        
+        const finalSchedules = isToday ? allSchedules.filter(r => r.departure_time >= currentSeconds) : allSchedules;
         setSchedulesWithArrival(finalSchedules);
         setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-        
       } else {
         setShowArrivalTime(false);
-        
-        // 🚀 SINGLE BATCH QUERY for all trips with departure stop only
         const stopTimesMap = await dbService.getStopTimesForTripsBatch(tripIds, departureStop.stop_id);
-        
         const allSchedules: ScheduleItem[] = [];
-        
         for (const [tripId, stopTime] of stopTimesMap.entries()) {
           if (!stopTime || !stopTime.departure_time) continue;
-          
           allSchedules.push({
             trip_id: tripId,
             departure_time: stopTime.departure_time,
@@ -655,22 +501,9 @@ export default function HomeScreen() {
             stop_sequence: stopTime.stop_sequence || 0
           });
         }
-        
         allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-        
         const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-        
-        let finalSchedules = allSchedules;
-        if (isToday) {
-          finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
-          console.log(`Filtered for today: ${finalSchedules.length} remaining from ${allSchedules.length}`);
-        }
-        
-        console.log(`${selectedDirection} schedules found: ${finalSchedules.length}`);
-        if (finalSchedules.length > 0) {
-          console.log(`First ${selectedDirection} departure: ${secondsToTimeString(finalSchedules[0].departure_time)}`);
-        }
-        
+        const finalSchedules = isToday ? allSchedules.filter(r => r.departure_time >= currentSeconds) : allSchedules;
         setSchedule(finalSchedules);
         setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
       }
@@ -682,7 +515,7 @@ export default function HomeScreen() {
     }
   };
 
-  const onRefresh = async (): Promise<void> => {
+  const onRefresh = async () => {
     setRefreshing(true);
     await loadRoutesWithDirections();
     if (selectedRoute && departureStop) await loadRecentSchedule();
@@ -691,40 +524,24 @@ export default function HomeScreen() {
 
   const getFormattedRouteLabel = (routeGroup: RouteGroup): string => {
     const routeType = routeGroup.isBus ? '🚌 Bus' : '🚆 Train';
-    let displayNumber = routeGroup.routeNumber;
-    
-    if (!routeGroup.isBus) {
-      displayNumber = routeGroup.routeNumber;
-    }
-    
-    return `${displayNumber} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
+    return `${routeGroup.routeNumber} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
   };
 
-  const routeItems = routeGroups.map((rg: RouteGroup) => ({
-    label: getFormattedRouteLabel(rg),
-    value: rg.routeNumber,
-  }));
-
-  const stopItems = stops.map((s: Stop) => ({ label: s.stop_name, value: s.stop_id }));
+  const routeItems = routeGroups.map(rg => ({ label: getFormattedRouteLabel(rg), value: rg.routeNumber }));
+  const stopItems = stops.map(s => ({ label: s.stop_name, value: s.stop_id }));
 
   const calculateWaitTime = (departureTime: number): string => {
     if (!departureTime && departureTime !== 0) return 'N/A';
     const now = new Date();
     let currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-    
-    let adjustedDepartureTime = departureTime;
-    if (adjustedDepartureTime >= 86400) {
-      adjustedDepartureTime = adjustedDepartureTime - 86400;
-    }
-    
-    let waitSeconds = adjustedDepartureTime - currentSeconds;
-    if (waitSeconds < 0) waitSeconds += 24 * 3600;
-    const waitMinutes = Math.floor(waitSeconds / 60);
-    if (waitMinutes < 1) return 'Now';
-    if (waitMinutes < 60) return `${waitMinutes} min`;
-    const hoursLeft = Math.floor(waitMinutes / 60);
-    const minsLeft = waitMinutes % 60;
-    return `${hoursLeft}h ${minsLeft}m`;
+    let adjusted = departureTime;
+    if (adjusted >= 86400) adjusted -= 86400;
+    let wait = adjusted - currentSeconds;
+    if (wait < 0) wait += 86400;
+    const minutes = Math.floor(wait / 60);
+    if (minutes < 1) return 'Now';
+    if (minutes < 60) return `${minutes} min`;
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   };
 
   const renderSection = ({ item }: { item: any }) => item.component;
@@ -739,10 +556,7 @@ export default function HomeScreen() {
       component: (
         <View style={styles.header}>
           <Text style={styles.title}>GO Transit Schedules</Text>
-          <TouchableOpacity 
-            style={styles.searchMapButton}
-            onPress={() => setShowNearbyMap(true)}
-          >
+          <TouchableOpacity style={styles.searchMapButton} onPress={() => setShowNearbyMap(true)}>
             <Text style={styles.searchMapButtonText}>🗺️ Nearby</Text>
           </TouchableOpacity>
         </View>
@@ -780,32 +594,16 @@ export default function HomeScreen() {
             <Text style={styles.sectionTitle}>Direction</Text>
             <View style={styles.toggleContainer}>
               <TouchableOpacity
-                style={[
-                  styles.toggleButton, 
-                  selectedDirection === 'inbound' && styles.toggleButtonActive
-                ]}
+                style={[styles.toggleButton, selectedDirection === 'inbound' && styles.toggleButtonActive]}
                 onPress={() => handleDirectionSelect('inbound')}
               >
-                <Text style={[
-                  styles.toggleButtonText, 
-                  selectedDirection === 'inbound' && styles.toggleButtonTextActive
-                ]}>
-                  ⬇️ To Union
-                </Text>
+                <Text style={[styles.toggleButtonText, selectedDirection === 'inbound' && styles.toggleButtonTextActive]}>⬇️ To Union</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[
-                  styles.toggleButton, 
-                  selectedDirection === 'outbound' && styles.toggleButtonActive
-                ]}
+                style={[styles.toggleButton, selectedDirection === 'outbound' && styles.toggleButtonActive]}
                 onPress={() => handleDirectionSelect('outbound')}
               >
-                <Text style={[
-                  styles.toggleButtonText, 
-                  selectedDirection === 'outbound' && styles.toggleButtonTextActive
-                ]}>
-                  ⬆️ Leave Union
-                </Text>
+                <Text style={[styles.toggleButtonText, selectedDirection === 'outbound' && styles.toggleButtonTextActive]}>⬆️ Leave Union</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -818,21 +616,16 @@ export default function HomeScreen() {
         key: 'mapControls',
         component: (
           <View style={styles.mapToggleContainer}>
-            <TouchableOpacity 
-              style={[styles.mapToggleButton, showMap && styles.mapToggleButtonActive]} 
-              onPress={() => setShowMap(!showMap)}
-            >
-              <Text style={[styles.mapToggleText, showMap && styles.mapToggleTextActive]}>
-                {showMap ? '📋 Hide Map' : '🗺️ Show Route Map'}
-              </Text>
+            <TouchableOpacity style={[styles.mapToggleButton, showMap && styles.mapToggleButtonActive]} onPress={() => setShowMap(!showMap)}>
+              <Text style={[styles.mapToggleText, showMap && styles.mapToggleTextActive]}>{showMap ? '📋 Hide Map' : '🗺️ Show Route Map'}</Text>
             </TouchableOpacity>
             {showMap && (
               <RouteMapView
                 routeId={selectedRoute.route_id}
                 routeShortName={selectedRoute.route_short_name}
-                variant={selectedRoute?.variant}        // ← FIX: use route's variant, not group's
+                variant={selectedRoute.variant}
                 selectedDate={selectedDate}
-                direction={selectedDirection || undefined}
+                direction={selectedDirection}
                 visible={showMap}
                 onClose={() => setShowMap(false)}
                 onSelectStop={handleMapStopSelect}
@@ -852,16 +645,12 @@ export default function HomeScreen() {
             <SearchablePicker
               items={stopItems}
               placeholder="Search for departure station..."
-              onValueChange={(stopId: string) => {
-                const stop = stops.find((s) => s.stop_id === stopId);
-                setDepartureStop(stop || null);
-              }}
+              onValueChange={(stopId: string) => setDepartureStop(stops.find(s => s.stop_id === stopId) || null)}
               value={departureStop?.stop_id}
             />
           </View>
         ),
       });
-      
       sections.push({
         key: 'arrivalStop',
         component: (
@@ -870,10 +659,7 @@ export default function HomeScreen() {
             <SearchablePicker
               items={stopItems}
               placeholder="Search for arrival station..."
-              onValueChange={(stopId: string) => {
-                const stop = stops.find((s) => s.stop_id === stopId);
-                setArrivalStop(stop || null);
-              }}
+              onValueChange={(stopId: string) => setArrivalStop(stops.find(s => s.stop_id === stopId) || null)}
               value={arrivalStop?.stop_id}
             />
           </View>
@@ -903,37 +689,23 @@ export default function HomeScreen() {
                 <View style={styles.nextScheduleTimeContainer}>
                   <View style={styles.nextTimeColumn}>
                     <Text style={styles.nextTimeLabel}>Depart</Text>
-                    <Text style={styles.nextScheduleTime}>
-                      {secondsToTimeString((nextSchedule as TripWithArrival).departure_time)}
-                    </Text>
+                    <Text style={styles.nextScheduleTime}>{secondsToTimeString((nextSchedule as TripWithArrival).departure_time)}</Text>
                   </View>
                   <Text style={styles.nextArrowSymbol}>→</Text>
                   <View style={styles.nextTimeColumn}>
                     <Text style={styles.nextTimeLabel}>Arrive</Text>
-                    <Text style={styles.nextScheduleTime}>
-                      {secondsToTimeString((nextSchedule as TripWithArrival).arrival_time)}
-                    </Text>
+                    <Text style={styles.nextScheduleTime}>{secondsToTimeString((nextSchedule as TripWithArrival).arrival_time)}</Text>
                   </View>
                 </View>
-                <Text style={styles.travelTimeInfo}>
-                  {(nextSchedule as TripWithArrival).travel_time_minutes} min
-                </Text>
+                <Text style={styles.travelTimeInfo}>{(nextSchedule as TripWithArrival).travel_time_minutes} min</Text>
               </>
             ) : (
               <>
-                <Text style={styles.nextScheduleTime}>
-                  {secondsToTimeString((nextSchedule as ScheduleItem).departure_time)}
-                </Text>
-                {isToday && (
-                  <Text style={styles.nextScheduleWait}>
-                    {calculateWaitTime((nextSchedule as ScheduleItem).departure_time)}
-                  </Text>
-                )}
+                <Text style={styles.nextScheduleTime}>{secondsToTimeString((nextSchedule as ScheduleItem).departure_time)}</Text>
+                {isToday && <Text style={styles.nextScheduleWait}>{calculateWaitTime((nextSchedule as ScheduleItem).departure_time)}</Text>}
               </>
             )}
-            <Text style={styles.nextScheduleDestination}>
-              → {nextSchedule.destination || 'Final Stop'}
-            </Text>
+            <Text style={styles.nextScheduleDestination}>→ {nextSchedule.destination || 'Final Stop'}</Text>
           </View>
         ),
       });
@@ -977,7 +749,6 @@ export default function HomeScreen() {
         ),
       });
     }
-
     return sections;
   };
 
@@ -1022,27 +793,11 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f5f5f5', padding: 20 },
   loadingText: { marginTop: 20, fontSize: 16, color: '#666' },
   loaderContainer: { marginTop: 20, alignItems: 'center', padding: 20 },
-  header: { 
-    backgroundColor: '#00A1E0', 
-    padding: 20, 
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
+  header: { backgroundColor: '#00A1E0', padding: 20, alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
   title: { fontSize: 24, fontWeight: 'bold', color: '#fff' },
-  searchMapButton: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginLeft: 10,
-  },
-  searchMapButtonText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  section: { backgroundColor: '#fff', margin: 15, padding: 15, borderRadius: 10, elevation: 2, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2 },
+  searchMapButton: { backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, marginLeft: 10 },
+  searchMapButtonText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  section: { backgroundColor: '#fff', margin: 15, padding: 15, borderRadius: 10, elevation: 2 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
   dateButton: { backgroundColor: '#f0f0f0', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
@@ -1053,7 +808,7 @@ const styles = StyleSheet.create({
   toggleButtonText: { fontSize: 14, fontWeight: '600', color: '#666' },
   toggleButtonTextActive: { color: '#fff' },
   mapToggleContainer: { marginHorizontal: 15, marginBottom: 10 },
-  mapToggleButton: { backgroundColor: '#f0f0f0', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 25, alignItems: 'center', borderWidth: 1, borderColor: '#ddd' },
+  mapToggleButton: { backgroundColor: '#f0f0f0', paddingVertical: 10, borderRadius: 25, alignItems: 'center', borderWidth: 1, borderColor: '#ddd' },
   mapToggleButtonActive: { backgroundColor: '#00A1E0', borderColor: '#00A1E0' },
   mapToggleText: { fontSize: 14, fontWeight: '600', color: '#666' },
   mapToggleTextActive: { color: '#fff' },
