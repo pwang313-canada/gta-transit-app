@@ -507,188 +507,139 @@ export default function HomeScreen() {
 
     setLoadingSchedule(true);
     try {
-      const queryDate = selectedDate;
-      const today = new Date();
-      const isToday = queryDate.toDateString() === today.toDateString();
-      const serviceId = formatDate(queryDate).replace(/-/g, '');
-      
-      console.log(`\n=== Loading Schedule ===`);
-      console.log(`Selected Date: ${queryDate.toDateString()}`);
-      console.log(`Service ID: ${serviceId}`);
-      console.log(`Route ID: ${selectedRoute.route_id}`);
-      console.log(`Route Type: ${selectedRoute.isBus ? 'Bus' : 'Train'}`);
-      console.log(`User selected direction: ${selectedDirection}`);
-      console.log(`Direction ID stored: ${selectedRoute.direction_id}`);
-      console.log(`Departure Stop: ${departureStop.stop_name} (${departureStop.stop_id})`);
-      if (arrivalStop) {
-        console.log(`Arrival Stop: ${arrivalStop.stop_name} (${arrivalStop.stop_id})`);
-      }
-      
-      // Query trips with the direction_id
-      let tripsQuery = `
-        SELECT trip_id, route_variant, direction_id
-        FROM trips 
-        WHERE route_id = ? 
-          AND service_id = ?
-          AND direction_id = ?
-      `;
-      
-      const queryParams: (string | number)[] = [
-        selectedRoute.route_id, 
-        serviceId, 
-        selectedRoute.direction_id !== undefined ? selectedRoute.direction_id : 0
-      ];
-      
-      if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
-        tripsQuery += ` AND route_variant = ?`;
-        queryParams.push(selectedRoute.variant);
-      }
-      
-      console.log(`Query params: route_id=${selectedRoute.route_id}, service_id=${serviceId}, direction_id=${selectedRoute.direction_id}`);
-      
-      let trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
-      
-      // For trains, also verify direction from trip_id to ensure correctness
-      if (selectedRoute.isBus === false && trips.length > 0) {
-        console.log(`Verifying train directions from trip_id...`);
-        const verifiedTrips = trips.filter(trip => {
-          const tripDirection = getDirectionFromTripId(trip.trip_id);
-          console.log(`Trip ${trip.trip_id}: direction from trip_id = ${tripDirection}, expected = ${selectedDirection}`);
-          return tripDirection === selectedDirection;
-        });
-        
-        if (verifiedTrips.length > 0) {
-          console.log(`After verification: ${verifiedTrips.length} trips match the expected direction`);
-          trips = verifiedTrips;
-        } else {
-          console.log(`Warning: No trips matched the expected direction after verification`);
-        }
-      }
-      
-      console.log(`Found ${trips.length} trips for ${selectedDirection} direction`);
-      
-      if (trips.length === 0) {
-        setLoadingSchedule(false);
-        Alert.alert('No Schedule', `No ${selectedDirection} trips found for this date`);
-        return;
-      }
-      
-      const tripIds = [...new Set(trips.map(t => t.trip_id).filter(id => id && id !== ''))];
-      console.log(`Trip IDs (${tripIds.length}):`, tripIds.slice(0, 5));
-      
-      if (arrivalStop) {
-        setShowArrivalTime(true);
-        const allSchedules: TripWithArrival[] = [];
-        
-        for (const tripId of tripIds) {
-          try {
-            const stopTimes = await dbService.getStopTimesForTrip(tripId);
-            if (stopTimes.length === 0) continue;
+          const queryDate = selectedDate;
+          const today = new Date();
+          const isToday = queryDate.toDateString() === today.toDateString();
+          const serviceId = formatDate(queryDate).replace(/-/g, '');
+          const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
+          
+          let trips = [];
+
+          if (arrivalStop) {
+            // OPTIMIZATION: Get trips, departure times, and arrival times in ONE query
+            let tripsQuery = `
+              SELECT 
+                t.trip_id,
+                st1.departure_time as dep_time,
+                st1.stop_sequence as dep_seq,
+                st2.arrival_time as arr_time,
+                st2.stop_sequence as arr_seq
+              FROM trips t
+              JOIN stop_times st1 ON t.trip_id = st1.trip_id AND st1.stop_id = ?
+              JOIN stop_times st2 ON t.trip_id = st2.trip_id AND st2.stop_id = ?
+              WHERE t.route_id = ? 
+                AND t.service_id = ?
+                AND t.direction_id = ?
+            `;
             
-            let departureStopInfo = null;
-            let arrivalStopInfo = null;
-            let departureSeq = -1;
-            let arrivalSeq = -1;
+            const queryParams: (string | number)[] = [
+              departureStop.stop_id,
+              arrivalStop.stop_id,
+              selectedRoute.route_id, 
+              serviceId, 
+              selectedRoute.direction_id !== undefined ? selectedRoute.direction_id : 0
+            ];
             
-            for (const stop of stopTimes) {
-              if (stop.stop_id === departureStop.stop_id) {
-                departureStopInfo = stop;
-                departureSeq = stop.stop_sequence;
-              }
-              if (stop.stop_id === arrivalStop.stop_id) {
-                arrivalStopInfo = stop;
-                arrivalSeq = stop.stop_sequence;
-              }
+            if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
+              tripsQuery += ` AND t.route_variant = ?`;
+              queryParams.push(selectedRoute.variant);
             }
             
-            if (!departureStopInfo || !arrivalStopInfo) continue;
+            trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
+            setShowArrivalTime(true);
+
+            // Map the results immediately without additional DB queries
+            const allSchedules: TripWithArrival[] = trips.map(row => {
+              let departureTime = row.dep_time;
+              let arrivalTime = row.arr_time;
+              
+              // Mirror your existing sequence swap logic
+              if (row.dep_seq > row.arr_seq) {
+                departureTime = row.arr_time;
+                arrivalTime = row.dep_time;
+              }
+              
+              return {
+                trip_id: row.trip_id,
+                departure_time: departureTime,
+                arrival_time: arrivalTime,
+                destination: selectedRoute.route_short_name,
+                departure_stop: departureStop.stop_id,
+                arrival_stop: arrivalStop.stop_id,
+                travel_time_minutes: Math.round((arrivalTime - departureTime) / 60)
+              };
+            }).filter(s => s.travel_time_minutes > 0);
+
+            // Train direction verification fallback (from your original logic)
+            const verifiedSchedules = selectedRoute.isBus === false 
+              ? allSchedules.filter(s => getDirectionFromTripId(s.trip_id) === selectedDirection)
+              : allSchedules;
+
+            verifiedSchedules.sort((a, b) => a.departure_time - b.departure_time);
             
-            let departureTime: number;
-            let arrivalTime: number;
+            const finalSchedules = isToday 
+              ? verifiedSchedules.filter(r => r.departure_time >= currentSeconds)
+              : verifiedSchedules;
+
+            setSchedulesWithArrival(finalSchedules);
+            setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
+
+          } else {
+            // OPTIMIZATION: Only Departure Stop selected - still done in ONE query
+            let tripsQuery = `
+              SELECT 
+                t.trip_id,
+                st.departure_time
+              FROM trips t
+              JOIN stop_times st ON t.trip_id = st.trip_id AND st.stop_id = ?
+              WHERE t.route_id = ? 
+                AND t.service_id = ?
+                AND t.direction_id = ?
+            `;
             
-            if (departureSeq < arrivalSeq) {
-              departureTime = departureStopInfo.departure_time;
-              arrivalTime = arrivalStopInfo.arrival_time;
-            } else {
-              departureTime = arrivalStopInfo.departure_time;
-              arrivalTime = departureStopInfo.arrival_time;
+            const queryParams: (string | number)[] = [
+              departureStop.stop_id,
+              selectedRoute.route_id, 
+              serviceId, 
+              selectedRoute.direction_id !== undefined ? selectedRoute.direction_id : 0
+            ];
+            
+            if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
+              tripsQuery += ` AND t.route_variant = ?`;
+              queryParams.push(selectedRoute.variant);
             }
             
-            if (!departureTime || !arrivalTime) continue;
-            
-            const travelMinutes = Math.round((arrivalTime - departureTime) / 60);
-            if (travelMinutes <= 0) continue;
-            
-            allSchedules.push({
-              trip_id: tripId,
-              departure_time: departureTime,
-              arrival_time: arrivalTime,
-              destination: selectedRoute.route_short_name,
-              departure_stop: departureStop.stop_id,
-              arrival_stop: arrivalStop.stop_id,
-              travel_time_minutes: travelMinutes
-            });
-          } catch (err) {
-            console.error(`Error processing trip ${tripId}:`, err);
-          }
-        }
-        
-        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-        
-        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-        
-        let finalSchedules = allSchedules;
-        if (isToday) {
-          finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
-          console.log(`Filtered for today: ${finalSchedules.length} remaining from ${allSchedules.length}`);
-        }
-        
-        console.log(`${selectedDirection} schedules found: ${finalSchedules.length}`);
-        if (finalSchedules.length > 0) {
-          console.log(`First ${selectedDirection} departure: ${secondsToTimeString(finalSchedules[0].departure_time)}`);
-        }
-        
-        setSchedulesWithArrival(finalSchedules);
-        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-      } else {
-        setShowArrivalTime(false);
-        const allSchedules: ScheduleItem[] = [];
-        
-        for (const tripId of tripIds) {
-          try {
-            const stopTime = await dbService.getStopTime(tripId, departureStop.stop_id);
-            if (!stopTime || !stopTime.departure_time) continue;
-            
-            allSchedules.push({
-              trip_id: tripId,
-              departure_time: stopTime.departure_time,
+            trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
+            setShowArrivalTime(false);
+
+            const allSchedules: ScheduleItem[] = trips.map(row => ({
+              trip_id: row.trip_id,
+              departure_time: row.departure_time,
               destination: selectedRoute.route_short_name,
               stop_sequence: 0
-            });
-          } catch (err) {
-            console.error(`Error processing trip ${tripId}:`, err);
+            }));
+
+            // Train direction verification
+            const verifiedSchedules = selectedRoute.isBus === false 
+              ? allSchedules.filter(s => getDirectionFromTripId(s.trip_id) === selectedDirection)
+              : allSchedules;
+
+            verifiedSchedules.sort((a, b) => a.departure_time - b.departure_time);
+            
+            const finalSchedules = isToday 
+              ? verifiedSchedules.filter(r => r.departure_time >= currentSeconds)
+              : verifiedSchedules;
+
+            setSchedule(finalSchedules);
+            setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
           }
-        }
-        
-        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-        
-        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-        
-        let finalSchedules = allSchedules;
-        if (isToday) {
-          finalSchedules = allSchedules.filter(r => r.departure_time >= currentSeconds);
-          console.log(`Filtered for today: ${finalSchedules.length} remaining from ${allSchedules.length}`);
-        }
-        
-        console.log(`${selectedDirection} schedules found: ${finalSchedules.length}`);
-        if (finalSchedules.length > 0) {
-          console.log(`First ${selectedDirection} departure: ${secondsToTimeString(finalSchedules[0].departure_time)}`);
-        }
-        
-        setSchedule(finalSchedules);
-        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-      }
-    } catch (error) {
+
+          if (trips.length === 0) {
+            Alert.alert('No Schedule', `No ${selectedDirection} trips found for this date`);
+          }
+
+        } catch (error) {
+// ... rest of your catch block
       console.error('Failed to load schedule:', error);
       Alert.alert('Error', 'Failed to load schedule. Please try again.');
     } finally {
