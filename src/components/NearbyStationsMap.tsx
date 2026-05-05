@@ -40,8 +40,8 @@ const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const DEFAULT_REGION = {
   latitude: 43.6532,
   longitude: -79.3832,
-  latitudeDelta: 0.8,
-  longitudeDelta: 0.8,
+  latitudeDelta: 0.5,
+  longitudeDelta: 0.5,
 };
 
 // Pre-computed: 1 degree lat ≈ 111km, 1 degree lon ≈ 78km at Toronto's latitude
@@ -67,8 +67,8 @@ const accurateDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: numb
 };
 
 // 🎯 CONFIG: Max distance and max stations
-const MAX_DISTANCE_KM = 5;
-const MAX_STATIONS = 10;
+const MAX_DISTANCE_KM = 3;
+const MAX_STATIONS = 5;
 
 const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
   visible,
@@ -115,14 +115,14 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
     const maxLng = Math.max(...lngs);
 
     // Add padding so markers aren't at the edge
-    const latPadding = Math.max((maxLat - minLat) * 0.3, 0.02);
-    const lngPadding = Math.max((maxLng - minLng) * 0.3, 0.02);
+    const latPadding = Math.max((maxLat - minLat) * 0.3, 0.01);
+    const lngPadding = Math.max((maxLng - minLng) * 0.3, 0.01);
 
     mapRef.current.animateToRegion({
       latitude: (minLat + maxLat) / 2,
       longitude: (minLng + maxLng) / 2,
-      latitudeDelta: Math.max((maxLat - minLat) + latPadding, 0.05),
-      longitudeDelta: Math.max((maxLng - minLng) + lngPadding, 0.05),
+      latitudeDelta: Math.max((maxLat - minLat) + latPadding, 0.03),
+      longitudeDelta: Math.max((maxLng - minLng) + lngPadding, 0.03),
     }, 500);
   }, [stations, userLocation]);
 
@@ -195,7 +195,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
           AND s.stop_lat != 0
           AND s.stop_lon != 0
         GROUP BY s.stop_id, s.stop_name, s.stop_lat, s.stop_lon
-        LIMIT 200
+        LIMIT 100
       `;
 
       const results = await dbService.executeCustomQuery<any>(query, [
@@ -206,7 +206,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
       const nearbyStations: Station[] = [];
       
       for (const row of results) {
-        // Fast filter: skip if >5km away
+        // Fast filter: skip if >3km away
         const fastDist = fastDistanceKm(lat, lon, row.stop_lat, row.stop_lon);
         if (fastDist > MAX_DISTANCE_KM) continue;
 
@@ -239,7 +239,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
         });
       }
 
-      // Sort by distance and take only top 10
+      // Sort by distance and take only top 5
       nearbyStations.sort((a, b) => (a.distance || 999) - (b.distance || 999));
       const topStations = nearbyStations.slice(0, MAX_STATIONS);
 
@@ -375,8 +375,8 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
               initialRegion={userLocation ? {
                 latitude: userLocation.latitude,
                 longitude: userLocation.longitude,
-                latitudeDelta: 0.1,
-                longitudeDelta: 0.1,
+                latitudeDelta: 0.06,
+                longitudeDelta: 0.06,
               } : DEFAULT_REGION}
             >
               {stations.map((station) => (
@@ -539,7 +539,6 @@ const styles = StyleSheet.create({
   map: { flex: 1 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { marginTop: 10, color: '#666' },
-  // 🆕 Station counter badge
   stationCounter: {
     position: 'absolute',
     top: 80,
@@ -577,7 +576,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   infoTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', flex: 1 },
-  // 🆕 Distance display
   infoDistance: {
     fontSize: 14,
     color: '#00A1E0',
