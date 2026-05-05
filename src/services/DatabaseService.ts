@@ -41,46 +41,45 @@ class DatabaseService {
     return DatabaseService.instance;
   }
 
-
-async initializeDatabase(): Promise<boolean> {
-  if (this.isInitialized && this.db) {
-    return true;
-  }
-
-  try {
-    console.log('Initializing database...');
-
-    const loaded = await loadDatabase();
-    if (!loaded) {
-      throw new Error('Failed to load database');
+  async initializeDatabase(): Promise<boolean> {
+    if (this.isInitialized && this.db) {
+      return true;
     }
 
-    // ✅ IMPORTANT: use DB name only
-    this.db = SQLite.openDatabaseSync('go_transit.db');
+    try {
+      console.log('Initializing database...');
 
-    // ✅ verify real tables exist
-    const tables = await this.db.getAllAsync<any>(
-      "SELECT name FROM sqlite_master WHERE type='table';"
-    );
+      const loaded = await loadDatabase();
+      if (!loaded) {
+        throw new Error('Failed to load database');
+      }
 
-    console.log('Tables:', tables);
+      this.db = SQLite.openDatabaseSync('go_transit.db');
 
-    if (!tables || tables.length === 0) {
-      throw new Error('Database is empty or not loaded correctly');
+      const tables = await this.db.getAllAsync<any>(
+        "SELECT name FROM sqlite_master WHERE type='table';"
+      );
+
+      console.log('Tables:', tables);
+
+      if (!tables || tables.length === 0) {
+        throw new Error('Database is empty or not loaded correctly');
+      }
+
+      this.isInitialized = true;
+      console.log('✅ Database initialized successfully');
+
+      return true;
+    } catch (error) {
+      console.error('❌ Database initialization failed:', error);
+      this.isInitialized = false;
+      this.db = null;
+      throw error;
     }
-
-    this.isInitialized = true;
-    console.log('✅ Database initialized successfully');
-
-    return true;
-  } catch (error) {
-    console.error('❌ Database initialization failed:', error);
-    this.isInitialized = false;
-    this.db = null;
-    throw error;
   }
-}
 
+  
+  
   private async getDatabase(): Promise<SQLite.SQLiteDatabase> {
     if (this.isInitialized && this.db) {
       return this.db;
@@ -105,7 +104,6 @@ async initializeDatabase(): Promise<boolean> {
     return yyyymmdd;
   }
 
-  // Execute custom query
   async executeCustomQuery<T>(query: string, params?: any[]): Promise<T[]> {
     const db = await this.getDatabase();
     try {
@@ -117,10 +115,9 @@ async initializeDatabase(): Promise<boolean> {
     }
   }
 
-  // Check if route is valid for a date
   isRouteValidForDate(routeId: string | number, date: Date): boolean {
-    const routeIdStr = this.ensureString(routeId);  // Add this line
-    const routeIdParts = routeIdStr.split('-');       // Use routeIdStr
+    const routeIdStr = this.ensureString(routeId);
+    const routeIdParts = routeIdStr.split('-');
     if (routeIdParts.length < 1) return true;
     
     const dateRangePart = routeIdParts[0];
@@ -143,82 +140,150 @@ async initializeDatabase(): Promise<boolean> {
     return true;
   }
 
-  // Get stops for a route
-// Update the getStopsByRoute method in DatabaseService.ts
-async getStopsByRoute(routeId: string | number, variant?: string, date?: Date): Promise<Stop[]> {
-  const db = await this.getDatabase();
-  const routeIdStr = this.ensureString(routeId);
-  
-  try {
-    const queryDate = date || new Date();
-    const serviceId = this.formatDateToServiceId(queryDate);
+  async getStopsByRoute(routeId: string | number, variant?: string, date?: Date): Promise<Stop[]> {
+    const db = await this.getDatabase();
+    const routeIdStr = this.ensureString(routeId);
     
-    let sampleTripQuery = `
-      SELECT trip_id, route_variant, service_id, direction_id 
-      FROM trips 
-      WHERE route_id = ?
-        AND service_id = ?
+    try {
+      const queryDate = date || new Date();
+      const serviceId = this.formatDateToServiceId(queryDate);
+      
+      let sampleTripQuery = `
+        SELECT trip_id, route_variant, service_id, direction_id 
+        FROM trips 
+        WHERE route_id = ?
+          AND service_id = ?
+      `;
+      
+      const sampleParams: any[] = [routeIdStr, serviceId];
+      
+      if (variant && typeof variant === 'string' && variant.trim() !== '' && variant !== 'none') {
+        sampleTripQuery += ` AND route_variant = ?`;
+        sampleParams.push(variant.trim());
+      }
+      
+      sampleTripQuery += ` LIMIT 1`;
+      
+      const sampleTrip = await db.getAllAsync<any>(sampleTripQuery, sampleParams);
+      
+      if (sampleTrip.length === 0) {
+        const fallbackTrip = await db.getAllAsync<any>(
+          `SELECT trip_id FROM trips WHERE route_id = ? LIMIT 1`,
+          [routeIdStr]
+        );
+        if (fallbackTrip.length === 0) return [];
+        return await this.getStopsForTrip(fallbackTrip[0].trip_id);
+      }
+      
+      return await this.getStopsForTrip(sampleTrip[0].trip_id);
+    } catch (error) {
+      console.error('Error fetching stops by route:', error);
+      return [];
+    }
+  }
+
+  private async getStopsForTrip(tripId: string): Promise<Stop[]> {
+    const db = await this.getDatabase();
+    
+    const stopsQuery = `
+      SELECT 
+        s.stop_id, 
+        s.stop_name,
+        CAST(s.stop_lat AS REAL) as stop_lat,
+        CAST(s.stop_lon AS REAL) as stop_lon,
+        st.stop_sequence
+      FROM stop_times st
+      INNER JOIN stops s ON st.stop_id = s.stop_id
+      WHERE st.trip_id = ?
+      ORDER BY st.stop_sequence ASC
     `;
     
-    const sampleParams: any[] = [routeIdStr, serviceId];
+    const stops = await db.getAllAsync<any>(stopsQuery, [tripId]);
     
-    if (variant && typeof variant === 'string' && variant.trim() !== '' && variant !== 'none') {
-      sampleTripQuery += ` AND route_variant = ?`;
-      sampleParams.push(variant.trim());
-    }
-    
-    sampleTripQuery += ` LIMIT 1`;
-    
-    const sampleTrip = await db.getAllAsync<any>(sampleTripQuery, sampleParams);
-    
-    if (sampleTrip.length === 0) {
-      // Try without service_id filter
-      const fallbackTrip = await db.getAllAsync<any>(
-        `SELECT trip_id FROM trips WHERE route_id = ? LIMIT 1`,
-        [routeIdStr]
-      );
-      if (fallbackTrip.length === 0) return [];
-      return await this.getStopsForTrip(fallbackTrip[0].trip_id);
-    }
-    
-    return await this.getStopsForTrip(sampleTrip[0].trip_id);
-  } catch (error) {
-    console.error('Error fetching stops by route:', error);
-    return [];
+    return stops.map(stop => ({
+      stop_id: stop.stop_id,
+      stop_name: stop.stop_name,
+      stop_lat: stop.stop_lat,
+      stop_lon: stop.stop_lon,
+    })) as Stop[];
   }
-}
 
-// Also update the getStopsForTrip method to ensure coordinates are numbers
-private async getStopsForTrip(tripId: string): Promise<Stop[]> {
-  const db = await this.getDatabase();
-  
-  const stopsQuery = `
-    SELECT 
-      s.stop_id, 
-      s.stop_name,
-      CAST(s.stop_lat AS REAL) as stop_lat,
-      CAST(s.stop_lon AS REAL) as stop_lon,
-      st.stop_sequence
-    FROM stop_times st
-    INNER JOIN stops s ON st.stop_id = s.stop_id
-    WHERE st.trip_id = ?
-    ORDER BY st.stop_sequence ASC
-  `;
-  
-  const stops = await db.getAllAsync<any>(stopsQuery, [tripId]);
-  
-  return stops.map(stop => ({
-    stop_id: stop.stop_id,
-    stop_name: stop.stop_name,
-    stop_lat: stop.stop_lat,
-    stop_lon: stop.stop_lon,
-  })) as Stop[];
-}
+  async getStopTimesForTripsBatch(tripIds: string[], stopId: string): Promise<Map<string, any>> {
+    const db = await this.getDatabase();
+    
+    if (tripIds.length === 0) return new Map();
+    
+    const CHUNK_SIZE = 900;
+    const results = new Map<string, any>();
+    
+    for (let i = 0; i < tripIds.length; i += CHUNK_SIZE) {
+      const chunk = tripIds.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      
+      const query = `
+        SELECT trip_id, stop_id, arrival_time, departure_time, stop_sequence
+        FROM stop_times
+        WHERE trip_id IN (${placeholders})
+          AND stop_id = ?
+      `;
+      
+      const rows = await db.getAllAsync<any>(query, [...chunk, stopId]);
+      
+      for (const row of rows) {
+        results.set(row.trip_id, row);
+      }
+    }
+    
+    return results;
+  }
 
-  // Get shape for a route
+  async getStopTimesForTripsBatchTwoStops(
+    tripIds: string[], 
+    departureStopId: string, 
+    arrivalStopId: string
+  ): Promise<Map<string, { departure: any; arrival: any }>> {
+    const db = await this.getDatabase();
+    
+    if (tripIds.length === 0) return new Map();
+    
+    const CHUNK_SIZE = 900;
+    const results = new Map<string, { departure: any; arrival: any }>();
+    
+    for (let i = 0; i < tripIds.length; i += CHUNK_SIZE) {
+      const chunk = tripIds.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      
+      const query = `
+        SELECT trip_id, stop_id, arrival_time, departure_time, stop_sequence
+        FROM stop_times
+        WHERE trip_id IN (${placeholders})
+          AND stop_id IN (?, ?)
+        ORDER BY trip_id, stop_sequence
+      `;
+      
+      const rows = await db.getAllAsync<any>(query, [...chunk, departureStopId, arrivalStopId]);
+      
+      for (const row of rows) {
+        const existing = results.get(row.trip_id) || { departure: null, arrival: null };
+        if (row.stop_id === departureStopId) {
+          existing.departure = row;
+        } else if (row.stop_id === arrivalStopId) {
+          existing.arrival = row;
+        }
+        results.set(row.trip_id, existing);
+      }
+    }
+    
+    return results;
+  }
+
   async getShapeForRoute(routeId: string | number, date?: Date, variant?: string): Promise<Array<{latitude: number, longitude: number}>> {
     const db = await this.getDatabase();
     const routeIdStr = this.ensureString(routeId);
+    
+    console.log('--- getShapeForRoute called ---');
+    console.log('routeIdStr:', routeIdStr);
+    console.log('variant:', variant);
     
     try {
       let tripQuery = `
@@ -238,22 +303,38 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
       
       tripQuery += ` LIMIT 1`;
       
+      console.log('Trip query:', tripQuery.replace(/\s+/g, ' ').trim());
+      console.log('Trip params:', tripParams);
+      
       const tripResult = await db.getAllAsync<any>(tripQuery, tripParams);
       
+      console.log('Trip result count:', tripResult.length);
+      if (tripResult.length > 0) {
+        console.log('Trip result[0]:', tripResult[0]);
+      }
+      
       if (tripResult.length === 0 || !tripResult[0].shape_id) {
+        console.log('No shape_id found with primary query, trying fallback...');
         if (variant) {
           const fallbackResult = await db.getAllAsync<any>(
             `SELECT DISTINCT t.shape_id FROM trips t WHERE t.route_id = ? AND t.shape_id IS NOT NULL AND t.shape_id != '' LIMIT 1`,
             [routeIdStr]
           );
           
+          console.log('Fallback result count:', fallbackResult.length);
+          if (fallbackResult.length > 0) {
+            console.log('Fallback shape_id:', fallbackResult[0].shape_id);
+          }
+          
           if (fallbackResult.length > 0 && fallbackResult[0].shape_id) {
             return await this.getShapePoints(fallbackResult[0].shape_id);
           }
         }
+        console.log('Returning empty shape array (no shape_id found)');
         return [];
       }
       
+      console.log('Using shape_id:', tripResult[0].shape_id);
       return await this.getShapePoints(tripResult[0].shape_id);
     } catch (error) {
       console.error('Error fetching shape for route:', error);
@@ -261,9 +342,11 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
     }
   }
 
-  // Get shape points
   private async getShapePoints(shapeId: string): Promise<Array<{latitude: number, longitude: number}>> {
     const db = await this.getDatabase();
+    
+    console.log('--- getShapePoints called ---');
+    console.log('shapeId:', shapeId);
     
     const shapeQuery = `
       SELECT 
@@ -275,7 +358,17 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
       ORDER BY shape_pt_sequence ASC
     `;
     
+    console.log('Shape query:', shapeQuery.replace(/\s+/g, ' ').trim());
+    
     const shapePoints = await db.getAllAsync<any>(shapeQuery, [shapeId]);
+    
+    console.log('Shape points count:', shapePoints.length);
+    if (shapePoints.length > 0) {
+      console.log('First shape point:', shapePoints[0]);
+      console.log('Last shape point:', shapePoints[shapePoints.length - 1]);
+    } else {
+      console.log('⚠️ shapes table returned 0 rows for shape_id:', shapeId);
+    }
     
     return shapePoints.map((point: any) => ({
       latitude: point.latitude,
@@ -283,7 +376,6 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
     }));
   }
 
-  // Get stop times for a trip
   async getStopTimesForTrip(tripId: string): Promise<any[]> {
     const db = await this.getDatabase();
     
@@ -297,7 +389,6 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
     return await db.getAllAsync<any>(query, [tripId]);
   }
 
-  // Get stop time for a specific trip and stop
   async getStopTime(tripId: string, stopId: string): Promise<any> {
     const db = await this.getDatabase();
     
@@ -312,7 +403,6 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
     return results.length > 0 ? results[0] : null;
   }
 
-  // Check database connection
   async checkConnection(): Promise<boolean> {
     try {
       const db = await this.getDatabase();
@@ -324,7 +414,6 @@ private async getStopsForTrip(tripId: string): Promise<Stop[]> {
     }
   }
 
-  // Close database connection
   async closeConnection(): Promise<void> {
     if (this.db) {
       try {

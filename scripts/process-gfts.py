@@ -117,9 +117,13 @@ def create_db():
             shape_pt_lon REAL
         );
 
-        CREATE INDEX idx_stop_times_stop ON stop_times(stop_id);
         CREATE INDEX idx_stop_times_trip ON stop_times(trip_id);
-        CREATE INDEX idx_trips_route ON trips(route_id);
+        CREATE INDEX idx_trips_route ON trips(route_id);                      
+        CREATE INDEX idx_stops_coords ON stops(stop_lat, stop_lon);
+        CREATE INDEX idx_stop_times_stop_id ON stop_times(stop_id);
+        CREATE INDEX idx_trips_route_service ON trips(route_id, service_id, direction_id);
+        CREATE INDEX idx_routes_short_name ON routes(route_short_name);
+        CREATE INDEX idx_stop_times_trip_stop ON stop_times(trip_id, stop_id);
     """)
 
     conn.commit()

@@ -1,17 +1,16 @@
 // src/screens/ScheduleScreen.tsx
-import React, { useState, useEffect } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ScrollView,
-  ActivityIndicator,
-} from 'react-native';
 import { RouteProp, useRoute } from '@react-navigation/native';
-import { RootStackParamList } from '../types';
+import React, { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { getScheduleForStation } from '../data/goTransitData';
-import moment from 'moment';
+import { RootStackParamList } from '../types';
 
 type ScheduleScreenRouteProp = RouteProp<RootStackParamList, 'Schedule'>;
 
