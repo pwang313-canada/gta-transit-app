@@ -188,6 +188,78 @@ async getStopsByRoute(routeId: string | number, variant?: string, date?: Date): 
   }
 }
 
+  // 🚀 BATCH: Get stop times for multiple trips at once (for a specific stop)
+  async getStopTimesForTripsBatch(tripIds: string[], stopId: string): Promise<Map<string, any>> {
+    const db = await this.getDatabase();
+    
+    if (tripIds.length === 0) return new Map();
+    
+    // SQLite has a limit of ~999 variables, so chunk if needed
+    const CHUNK_SIZE = 900;
+    const results = new Map<string, any>();
+    
+    for (let i = 0; i < tripIds.length; i += CHUNK_SIZE) {
+      const chunk = tripIds.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      
+      const query = `
+        SELECT trip_id, stop_id, arrival_time, departure_time, stop_sequence
+        FROM stop_times
+        WHERE trip_id IN (${placeholders})
+          AND stop_id = ?
+      `;
+      
+      const rows = await db.getAllAsync<any>(query, [...chunk, stopId]);
+      
+      for (const row of rows) {
+        results.set(row.trip_id, row);
+      }
+    }
+    
+    return results;
+  }
+
+  // 🚀 BATCH: Get stop times for multiple trips with TWO stops (departure + arrival)
+  async getStopTimesForTripsBatchTwoStops(
+    tripIds: string[], 
+    departureStopId: string, 
+    arrivalStopId: string
+  ): Promise<Map<string, { departure: any; arrival: any }>> {
+    const db = await this.getDatabase();
+    
+    if (tripIds.length === 0) return new Map();
+    
+    const CHUNK_SIZE = 900;
+    const results = new Map<string, { departure: any; arrival: any }>();
+    
+    for (let i = 0; i < tripIds.length; i += CHUNK_SIZE) {
+      const chunk = tripIds.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+      
+      const query = `
+        SELECT trip_id, stop_id, arrival_time, departure_time, stop_sequence
+        FROM stop_times
+        WHERE trip_id IN (${placeholders})
+          AND stop_id IN (?, ?)
+        ORDER BY trip_id, stop_sequence
+      `;
+      
+      const rows = await db.getAllAsync<any>(query, [...chunk, departureStopId, arrivalStopId]);
+      
+      // Group by trip_id
+      for (const row of rows) {
+        const existing = results.get(row.trip_id) || { departure: null, arrival: null };
+        if (row.stop_id === departureStopId) {
+          existing.departure = row;
+        } else if (row.stop_id === arrivalStopId) {
+          existing.arrival = row;
+        }
+        results.set(row.trip_id, existing);
+      }
+    }
+    
+    return results;
+  }
 // Also update the getStopsForTrip method to ensure coordinates are numbers
 private async getStopsForTrip(tripId: string): Promise<Stop[]> {
   const db = await this.getDatabase();
