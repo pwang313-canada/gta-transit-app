@@ -130,7 +130,7 @@ export default function HomeScreen() {
   useEffect(() => {
     const init = async () => {
       try {
-        const ok = await dbService.initializeDatabase();
+        const ok = await dbService.initializeDatabase(true);
 
         await new Promise(res => setTimeout(res, 100));
 
@@ -399,8 +399,8 @@ export default function HomeScreen() {
         route_short_name: selectedRouteData.route_short_name,
         route_long_name: selectedRouteData.route_long_name,
         direction_id: directionId,
-        variant: selectedRouteGroup.variant,
-        isBus: selectedRouteGroup.isBus  // Add isBus property
+        variant: selectedRouteGroup.isBus ? selectedRouteGroup.variant : undefined,  // ← FIX: only for buses
+        isBus: selectedRouteGroup.isBus
       };
       
       setSelectedRoute(selectedRouteObj);
@@ -830,9 +830,8 @@ export default function HomeScreen() {
               <RouteMapView
                 routeId={selectedRoute.route_id}
                 routeShortName={selectedRoute.route_short_name}
-                variant={selectedRouteGroup?.variant}
+                variant={selectedRoute?.variant}        // ← FIX: use route's variant, not group's
                 selectedDate={selectedDate}
-                direction={selectedDirection || undefined}
                 visible={showMap}
                 onClose={() => setShowMap(false)}
                 onSelectStop={handleMapStopSelect}

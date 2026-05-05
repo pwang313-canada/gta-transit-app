@@ -42,30 +42,33 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       const dbService = DatabaseService;
       const date = selectedDate || new Date();
       
+      const effectiveVariant = variant && variant !== routeShortName ? variant : undefined;
+      
       console.log('Loading route geometry...');
       console.log('Route ID:', routeId);
       console.log('Date:', date);
-      console.log('Variant:', variant);
+      console.log('Variant prop:', variant);
+      console.log('Effective Variant:', effectiveVariant);
       
       // Load stops and shape data in parallel
       const [stopsList, shapeData] = await Promise.all([
-        dbService.getStopsByRoute(routeId, variant || undefined, date),
-        dbService.getShapeForRoute(routeId, date, variant || undefined)
+        dbService.getStopsByRoute(routeId, effectiveVariant, date),
+        dbService.getShapeForRoute(routeId, date, effectiveVariant)
       ]);
       
-      // Set shape coordinates
+      // Log what came back from the shape query
+      console.log('Shape data returned:', shapeData ? `${shapeData.length} points` : 'null/undefined');
       if (shapeData && shapeData.length > 0) {
+        console.log('First shape point:', shapeData[0]);
+        console.log('Last shape point:', shapeData[shapeData.length - 1]);
         setShapeCoordinates(shapeData);
-        console.log(`✅ Loaded ${shapeData.length} shape points`);
       } else {
         console.log('⚠️ No shape data found, will use straight lines between stops');
         setShapeCoordinates([]);
       }
       
       if (stopsList && stopsList.length > 0) {
-        // Use coordinates directly from database
         const stopsWithCoords = stopsList.map((stop: any) => {
-          // Check if stop has valid coordinates from database
           if (stop.stop_lat && stop.stop_lon && stop.stop_lat !== 0 && stop.stop_lon !== 0) {
             return {
               ...stop,
@@ -74,11 +77,10 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
               hasCoords: true
             };
           } else {
-            // Only if no coordinates in database, use a default near Toronto
             console.warn(`Missing coordinates for: ${stop.stop_name}, using approximate location`);
             return {
               ...stop,
-              latitude: 43.645 + (Math.random() - 0.5) * 0.1, // Spread out stations without coords
+              latitude: 43.645 + (Math.random() - 0.5) * 0.1,
               longitude: -79.38 + (Math.random() - 0.5) * 0.1,
               hasCoords: false
             };
@@ -87,11 +89,6 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
         
         setStops(stopsWithCoords);
         console.log(`✅ Loaded ${stopsWithCoords.length} stops for route ${routeId}`);
-        
-        // Log coordinates for debugging
-        stopsWithCoords.forEach((stop: any) => {
-          console.log(`  ${stop.stop_name}: (${stop.latitude}, ${stop.longitude}) ${stop.hasCoords ? '✓' : '⚠️'}`);
-        });
       } else {
         console.log('❌ No stops found');
         setError('No stops found for this route on selected date');
@@ -140,10 +137,8 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     );
   }
 
-  // Filter stops with valid coordinates for map display
   const validStops = stops.filter(s => s.latitude && s.longitude);
   
-  // Calculate map region based on stops with valid coordinates
   let initialRegion;
   if (validStops.length > 0) {
     const lats = validStops.map(s => s.latitude);
@@ -168,11 +163,13 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     };
   }
 
+  const displayVariant = variant && variant !== routeShortName ? variant : undefined;
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>
-          Route {routeShortName} {variant ? `(${variant})` : ''}
+          Route {routeShortName} {displayVariant ? `(${displayVariant})` : ''}
         </Text>
         <TouchableOpacity onPress={onClose} style={styles.closeButton}>
           <Text style={styles.closeButtonText}>✕</Text>
@@ -183,7 +180,6 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
         style={styles.map}
         initialRegion={initialRegion}
       >
-        {/* Draw the actual route shape from GTFS data */}
         {shapeCoordinates.length > 1 && (
           <Polyline
             coordinates={shapeCoordinates}
@@ -194,7 +190,6 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
           />
         )}
         
-        {/* Fallback: Draw straight lines between stops if no shape data */}
         {shapeCoordinates.length === 0 && validStops.length > 1 && (
           <Polyline
             coordinates={validStops.map(s => ({
@@ -207,7 +202,6 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
           />
         )}
         
-        {/* Station markers - using coordinates from database */}
         {stops.map((stop, index) => {
           if (!stop.latitude || !stop.longitude) return null;
           
