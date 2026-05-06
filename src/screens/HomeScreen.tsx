@@ -19,6 +19,7 @@ import RouteMapView from '../components/RouteMapView';
 import SearchablePicker from '../components/SearchableRoutePicker';
 import DatabaseService from '../services/DatabaseService';
 
+// ========== Type Definitions ==========
 interface Route {
   route_id: string;
   route_short_name: string;
@@ -70,8 +71,9 @@ interface Favorite {
   routeLongName: string;
 }
 
-const STORAGE_KEY = 'go_favorites';
+const STORAGE_KEY = 'go_transit_favorites';
 
+// ========== Helper Functions ==========
 const secondsToTimeString = (seconds: number): string => {
   if (!seconds && seconds !== 0) return '';
   let adjustedSeconds = seconds;
@@ -94,6 +96,7 @@ const getDirectionFromTripId = (tripId: string): 'inbound' | 'outbound' | null =
 };
 
 export default function HomeScreen() {
+  // ========== State ==========
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [routeGroups, setRouteGroups] = useState<RouteGroup[]>([]);
@@ -117,7 +120,7 @@ export default function HomeScreen() {
   const flatListRef = useRef<FlatList>(null);
   const dbService = DatabaseService;
 
-  // Load favorites on mount
+  // ========== Favorites Persistence ==========
   useEffect(() => {
     loadFavorites();
   }, []);
@@ -126,12 +129,10 @@ export default function HomeScreen() {
     try {
       const stored = await SecureStore.getItemAsync(STORAGE_KEY);
       if (stored) {
-        const parsed = JSON.parse(stored);
-        setFavorites(parsed);
+        setFavorites(JSON.parse(stored));
       }
     } catch (error) {
-      console.error('Failed to load favorites:', error);
-      // If SecureStore fails, fallback to empty array
+      console.error('Load favorites error:', error);
       setFavorites([]);
     }
   };
@@ -141,8 +142,8 @@ export default function HomeScreen() {
       await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(newFavorites));
       setFavorites(newFavorites);
     } catch (error) {
-      console.error('Failed to save favorites:', error);
-      Alert.alert('Save Failed', 'Could not save favorite. Please try again.');
+      console.error('Save favorites error:', error);
+      Alert.alert('Error', 'Unable to save favorite. Please try again.');
     }
   };
 
@@ -151,8 +152,8 @@ export default function HomeScreen() {
       Alert.alert('Cannot Save', 'Please select a route, direction, departure and arrival stops first.');
       return;
     }
-    if (favorites.length >= 2) {
-      Alert.alert('Limit Reached', 'You can only save up to 2 favorites. Delete one first.');
+    if (favorites.length >= 4) {
+      Alert.alert('Limit Reached', 'You can only save up to 4 favorites. Delete one first.');
       return;
     }
     const newFavorite: Favorite = {
@@ -176,24 +177,24 @@ export default function HomeScreen() {
   };
 
   const loadFavorite = async (fav: Favorite) => {
-    // Find the current matching route group (route number + variant)
     const routeGroup = routeGroups.find(
       rg => rg.routeNumber === fav.routeShortName && rg.variant === fav.variant
     );
     if (!routeGroup) {
-      Alert.alert('Route Not Found', `Route ${fav.routeShortName} (${fav.variant}) is not available in current data.`);
+      Alert.alert('Route Not Found', `Route ${fav.routeShortName} (${fav.variant}) is not available.`);
       return;
     }
-    // Determine which stop is the non-Union one (the one to pre‑fill)
+    // Explicitly set the selected route group before loading direction
+    setSelectedRouteGroup(routeGroup);
     const unionNameLower = 'union';
     const isDepartureNonUnion = !fav.departureStop.stop_name.toLowerCase().includes(unionNameLower);
     const selectedStop = isDepartureNonUnion ? fav.departureStop : fav.arrivalStop;
-    // Call direction select with the route group and the chosen stop
     await handleDirectionSelect(fav.direction, routeGroup, selectedStop);
   };
 
-  // Reset when route group changes
-  useEffect(() => {
+  // ========== Core Functions ==========
+  const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
+    setSelectedRouteGroup(routeGroup);
     setSelectedDirection(null);
     setSelectedRoute(null);
     setDepartureStop(null);
@@ -201,30 +202,285 @@ export default function HomeScreen() {
     setSchedule([]);
     setSchedulesWithArrival([]);
     setNextSchedule(null);
-    setStops([]);
+    setShowArrivalTime(false);
     setShowMap(false);
-  }, [selectedRouteGroup]);
+    setStops([]);
+  };
 
-  // Initial DB load
-  useEffect(() => {
-    const init = async () => {
-      try {
-        const ok = await dbService.initializeDatabase();
-        await new Promise(res => setTimeout(res, 100));
-        if (!ok) throw new Error('Database failed to initialize');
-        await loadRoutesWithDirections();
-      } catch (e) {
-        console.error('INIT FAILED:', e);
-        Alert.alert('Database Error', 'Failed to load database');
+  const findUnionStation = (stopsList: Stop[]): Stop | null =>
+    stopsList.find(stop =>
+      stop.stop_name.toLowerCase().includes('union station') ||
+      stop.stop_name.toLowerCase().includes('union go') ||
+      stop.stop_name.toLowerCase() === 'union'
+    ) || null;
+
+  const getDirectionFilter = (direction: 'inbound' | 'outbound', isBus: boolean): number =>
+    isBus ? (direction === 'inbound' ? 0 : 1) : (direction === 'inbound' ? 1 : 0);
+
+  const handleDirectionSelect = async (
+    direction: 'inbound' | 'outbound',
+    routeGroup?: RouteGroup,
+    selectedStop?: Stop
+  ): Promise<void> => {
+    const effectiveRouteGroup = routeGroup || selectedRouteGroup;
+    if (!effectiveRouteGroup) return;
+
+    setSelectedDirection(direction);
+    setSelectedRoute(null);
+    setSchedule([]);
+    setSchedulesWithArrival([]);
+    setNextSchedule(null);
+    setShowArrivalTime(false);
+    setShowMap(false);
+    setStops([]);
+    setDepartureStop(null);
+    setArrivalStop(null);
+
+    try {
+      const serviceId = formatDate(selectedDate).replace(/-/g, '');
+      const routeNumberMatch = effectiveRouteGroup.routeNumber.match(/^(\d+)([A-Z]*)$/);
+      const baseRouteNumber = routeNumberMatch ? routeNumberMatch[1] : effectiveRouteGroup.routeNumber;
+      const directionId = getDirectionFilter(direction, effectiveRouteGroup.isBus);
+
+      let routeQuery: string;
+      let queryParams: (string | number)[];
+      if (effectiveRouteGroup.isBus) {
+        routeQuery = `
+          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
+          FROM routes r
+          INNER JOIN trips t ON r.route_id = t.route_id
+          WHERE r.route_short_name = ? AND t.route_variant = ? AND t.service_id = ? AND t.direction_id = ?
+          ORDER BY r.route_id DESC
+        `;
+        queryParams = [baseRouteNumber, effectiveRouteGroup.routeNumber, serviceId, directionId];
+      } else {
+        routeQuery = `
+          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
+          FROM routes r
+          INNER JOIN trips t ON r.route_id = t.route_id
+          WHERE r.route_short_name = ? AND t.service_id = ? AND t.direction_id = ?
+          ORDER BY r.route_id DESC
+        `;
+        queryParams = [baseRouteNumber, serviceId, directionId];
       }
-    };
-    init();
-  }, []);
 
-  // Load schedule when stops are ready
-  useEffect(() => {
-    if (selectedRoute && departureStop) loadRecentSchedule();
-  }, [selectedRoute, departureStop, arrivalStop, selectedDate]);
+      const availableRoutes = await dbService.executeCustomQuery<any>(routeQuery, queryParams);
+      if (availableRoutes.length === 0) {
+        Alert.alert('No Service', `No ${direction} service for ${effectiveRouteGroup.routeNumber} on ${selectedDate.toDateString()}`);
+        setSelectedDirection(null);
+        return;
+      }
+
+      let selectedRouteData = null;
+      if (effectiveRouteGroup.isBus) {
+        for (const route of availableRoutes) {
+          if (dbService.isRouteValidForDate(route.route_id, selectedDate)) {
+            selectedRouteData = route;
+            break;
+          }
+        }
+      } else {
+        selectedRouteData = availableRoutes[0];
+      }
+
+      if (!selectedRouteData) {
+        Alert.alert('No Valid Route', `No valid route found for ${effectiveRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
+        return;
+      }
+
+      const selectedRouteObj: Route = {
+        route_id: selectedRouteData.route_id,
+        route_short_name: selectedRouteData.route_short_name,
+        route_long_name: selectedRouteData.route_long_name,
+        direction_id: directionId,
+        variant: effectiveRouteGroup.isBus ? effectiveRouteGroup.variant : undefined,
+        isBus: effectiveRouteGroup.isBus
+      };
+      setSelectedRoute(selectedRouteObj);
+
+      const variantParam = effectiveRouteGroup.isBus ? effectiveRouteGroup.variant : '';
+      const stopsList = await dbService.getStopsByRoute(
+        selectedRouteData.route_id,
+        variantParam,
+        selectedDate
+      );
+      const typedStops: Stop[] = stopsList.map((stop: any) => ({
+        stop_id: stop.stop_id,
+        stop_name: stop.stop_name,
+      }));
+      setStops(typedStops);
+
+      const unionStop = findUnionStation(typedStops);
+
+      if (direction === 'inbound') {
+        setArrivalStop(unionStop);
+        if (selectedStop) {
+          const found = typedStops.find(s => s.stop_id === selectedStop.stop_id);
+          setDepartureStop(found || null);
+          if (!found) console.warn(`Selected stop ${selectedStop.stop_name} not found in stops list`);
+        } else {
+          setDepartureStop(null);
+        }
+      } else {
+        setDepartureStop(unionStop);
+        if (selectedStop) {
+          const found = typedStops.find(s => s.stop_id === selectedStop.stop_id);
+          setArrivalStop(found || null);
+          if (!found) console.warn(`Selected stop ${selectedStop.stop_name} not found in stops list`);
+        } else {
+          setArrivalStop(null);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load stops:', error);
+      Alert.alert('Error', 'Failed to load stops. Please try again.');
+    }
+  };
+
+  const handleMapStopSelect = (stop: any, type: 'departure' | 'arrival') => {
+    if (type === 'departure') {
+      setDepartureStop(stop ? { stop_id: stop.stop_id, stop_name: stop.stop_name } : null);
+    } else {
+      setArrivalStop(stop ? { stop_id: stop.stop_id, stop_name: stop.stop_name } : null);
+    }
+  };
+
+  const handleNearbyRouteSelect = (route: {
+    routeId: string;
+    routeShortName: string;
+    variant?: string;
+    direction?: 'inbound' | 'outbound';
+    stopId?: string;
+    stopName?: string;
+  }) => {
+    const routeGroup = routeGroups.find(rg => rg.routeNumber === route.routeShortName);
+    if (!routeGroup) {
+      Alert.alert('Route Not Found', `Could not find route ${route.routeShortName}`);
+      return;
+    }
+    setSelectedRouteGroup(routeGroup);
+    setSelectedDirection(route.direction || null);
+    const selectedStop = route.stopId ? { stop_id: route.stopId, stop_name: route.stopName || '' } : undefined;
+    handleDirectionSelect(route.direction!, routeGroup, selectedStop);
+  };
+
+  const onDateChange = (event: any, selectedDate?: Date) => {
+    if (Platform.OS === 'android') setShowDatePicker(false);
+    if (selectedDate) {
+      setSelectedDate(selectedDate);
+      setSelectedDirection(null);
+      setSelectedRoute(null);
+      setDepartureStop(null);
+      setArrivalStop(null);
+      setSchedule([]);
+      setSchedulesWithArrival([]);
+      setNextSchedule(null);
+      setStops([]);
+    }
+  };
+
+  const loadRecentSchedule = async (): Promise<void> => {
+    if (!selectedRoute || !departureStop) return;
+    setLoadingSchedule(true);
+    try {
+      const queryDate = selectedDate;
+      const today = new Date();
+      const isToday = queryDate.toDateString() === today.toDateString();
+      const serviceId = formatDate(queryDate).replace(/-/g, '');
+
+      let tripsQuery = `
+        SELECT trip_id, route_variant, direction_id
+        FROM trips 
+        WHERE route_id = ? AND service_id = ? AND direction_id = ?
+      `;
+      const queryParams: (string | number)[] = [
+        selectedRoute.route_id, serviceId, selectedRoute.direction_id ?? 0
+      ];
+      if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
+        tripsQuery += ` AND route_variant = ?`;
+        queryParams.push(selectedRoute.variant);
+      }
+
+      let trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
+
+      if (!selectedRoute.isBus && trips.length > 0) {
+        trips = trips.filter(trip => getDirectionFromTripId(trip.trip_id) === selectedDirection);
+      }
+
+      if (trips.length === 0) {
+        setLoadingSchedule(false);
+        Alert.alert('No Schedule', `No ${selectedDirection} trips found for this date`);
+        return;
+      }
+
+      const tripIds = [...new Set(trips.map(t => t.trip_id).filter(id => id && id !== ''))];
+
+      if (arrivalStop) {
+        setShowArrivalTime(true);
+        const stopTimesMap = await dbService.getStopTimesForTripsBatchTwoStops(
+          tripIds, departureStop.stop_id, arrivalStop.stop_id
+        );
+        const allSchedules: TripWithArrival[] = [];
+        for (const [tripId, stops] of stopTimesMap.entries()) {
+          if (!stops.departure || !stops.arrival) continue;
+          let departureTime: number, arrivalTime: number;
+          if (stops.departure.stop_sequence < stops.arrival.stop_sequence) {
+            departureTime = stops.departure.departure_time;
+            arrivalTime = stops.arrival.arrival_time;
+          } else {
+            departureTime = stops.arrival.departure_time;
+            arrivalTime = stops.departure.arrival_time;
+          }
+          if (!departureTime || !arrivalTime) continue;
+          const travelMinutes = Math.round((arrivalTime - departureTime) / 60);
+          if (travelMinutes <= 0) continue;
+          allSchedules.push({
+            trip_id: tripId,
+            departure_time: departureTime,
+            arrival_time: arrivalTime,
+            destination: selectedRoute.route_short_name,
+            departure_stop: departureStop.stop_id,
+            arrival_stop: arrivalStop.stop_id,
+            travel_time_minutes: travelMinutes
+          });
+        }
+        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
+        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
+        const finalSchedules = isToday ? allSchedules.filter(r => r.departure_time >= currentSeconds) : allSchedules;
+        setSchedulesWithArrival(finalSchedules);
+        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
+      } else {
+        setShowArrivalTime(false);
+        const stopTimesMap = await dbService.getStopTimesForTripsBatch(tripIds, departureStop.stop_id);
+        const allSchedules: ScheduleItem[] = [];
+        for (const [tripId, stopTime] of stopTimesMap.entries()) {
+          if (!stopTime || !stopTime.departure_time) continue;
+          allSchedules.push({
+            trip_id: tripId,
+            departure_time: stopTime.departure_time,
+            destination: selectedRoute.route_short_name,
+            stop_sequence: stopTime.stop_sequence || 0
+          });
+        }
+        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
+        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
+        const finalSchedules = isToday ? allSchedules.filter(r => r.departure_time >= currentSeconds) : allSchedules;
+        setSchedule(finalSchedules);
+        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
+      }
+    } catch (error) {
+      console.error('Failed to load schedule:', error);
+      Alert.alert('Error', 'Failed to load schedule. Please try again.');
+    } finally {
+      setLoadingSchedule(false);
+    }
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    if (selectedRoute && departureStop) await loadRecentSchedule();
+    setRefreshing(false);
+  };
 
   const loadRoutesWithDirections = async (): Promise<void> => {
     try {
@@ -315,288 +571,27 @@ export default function HomeScreen() {
     }
   };
 
-  const findUnionStation = (stopsList: Stop[]): Stop | null =>
-    stopsList.find(stop => 
-      stop.stop_name.toLowerCase().includes('union station') ||
-      stop.stop_name.toLowerCase().includes('union go') ||
-      stop.stop_name.toLowerCase() === 'union'
-    ) || null;
-
-  const getDirectionFilter = (direction: 'inbound' | 'outbound', isBus: boolean): number =>
-    isBus ? (direction === 'inbound' ? 0 : 1) : (direction === 'inbound' ? 1 : 0);
-
-  const handleDirectionSelect = async (
-    direction: 'inbound' | 'outbound',
-    routeGroup?: RouteGroup,
-    selectedStop?: Stop
-  ): Promise<void> => {
-    const effectiveRouteGroup = routeGroup || selectedRouteGroup;
-    if (!effectiveRouteGroup) return;
-
-    setSelectedDirection(direction);
-    setSelectedRoute(null);
-    setSchedule([]);
-    setSchedulesWithArrival([]);
-    setNextSchedule(null);
-    setShowArrivalTime(false);
-    setShowMap(false);
-    setStops([]);
-    setDepartureStop(null);
-    setArrivalStop(null);
-
-    try {
-      const serviceId = formatDate(selectedDate).replace(/-/g, '');
-      const routeNumberMatch = effectiveRouteGroup.routeNumber.match(/^(\d+)([A-Z]*)$/);
-      const baseRouteNumber = routeNumberMatch ? routeNumberMatch[1] : effectiveRouteGroup.routeNumber;
-      const routeLetter = routeNumberMatch ? routeNumberMatch[2] : '';
-      const directionId = getDirectionFilter(direction, effectiveRouteGroup.isBus);
-      
-      let routeQuery: string;
-      let queryParams: (string | number)[];
-      if (effectiveRouteGroup.isBus) {
-        routeQuery = `
-          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name, t.route_variant
-          FROM routes r
-          INNER JOIN trips t ON r.route_id = t.route_id
-          WHERE r.route_short_name = ? AND t.route_variant = ? AND t.service_id = ? AND t.direction_id = ?
-          ORDER BY r.route_id DESC
-        `;
-        queryParams = [baseRouteNumber, effectiveRouteGroup.routeNumber, serviceId, directionId];
-      } else {
-        routeQuery = `
-          SELECT DISTINCT r.route_id, r.route_short_name, r.route_long_name
-          FROM routes r
-          INNER JOIN trips t ON r.route_id = t.route_id
-          WHERE r.route_short_name = ? AND t.service_id = ? AND t.direction_id = ?
-          ORDER BY r.route_id DESC
-        `;
-        queryParams = [baseRouteNumber, serviceId, directionId];
+  // Initial database initialization
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const ok = await dbService.initializeDatabase();
+        await new Promise(res => setTimeout(res, 100));
+        if (!ok) throw new Error('Database failed to initialize');
+        await loadRoutesWithDirections();
+      } catch (e) {
+        console.error('INIT FAILED:', e);
+        Alert.alert('Database Error', 'Failed to load database');
       }
-      
-      const availableRoutes = await dbService.executeCustomQuery<any>(routeQuery, queryParams);
-      if (availableRoutes.length === 0) {
-        Alert.alert('No Service', `No ${direction} service for ${effectiveRouteGroup.routeNumber} on ${selectedDate.toDateString()}`);
-        setSelectedDirection(null);
-        return;
-      }
-      
-      let selectedRouteData = null;
-      if (effectiveRouteGroup.isBus) {
-        for (const route of availableRoutes) {
-          if (dbService.isRouteValidForDate(route.route_id, selectedDate)) {
-            selectedRouteData = route;
-            break;
-          }
-        }
-      } else {
-        selectedRouteData = availableRoutes[0];
-      }
-      
-      if (!selectedRouteData) {
-        Alert.alert('No Valid Route', `No valid route found for ${effectiveRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
-        return;
-      }
-      
-      const selectedRouteObj: Route = {
-        route_id: selectedRouteData.route_id,
-        route_short_name: selectedRouteData.route_short_name,
-        route_long_name: selectedRouteData.route_long_name,
-        direction_id: directionId,
-        variant: effectiveRouteGroup.isBus ? effectiveRouteGroup.variant : undefined,
-        isBus: effectiveRouteGroup.isBus
-      };
-      setSelectedRoute(selectedRouteObj);
-      
-      const variantParam = effectiveRouteGroup.isBus ? effectiveRouteGroup.variant : '';
-      const stopsList = await dbService.getStopsByRoute(
-        selectedRouteData.route_id, 
-        variantParam,
-        selectedDate
-      );
-      const typedStops: Stop[] = stopsList.map((stop: any) => ({
-        stop_id: stop.stop_id,
-        stop_name: stop.stop_name,
-      }));
-      setStops(typedStops);
-      
-      const unionStop = findUnionStation(typedStops);
-      
-      if (direction === 'inbound') {
-        setArrivalStop(unionStop);
-        if (selectedStop) {
-          const found = typedStops.find(s => s.stop_id === selectedStop.stop_id);
-          setDepartureStop(found || null);
-          if (!found) console.warn(`Selected stop ${selectedStop.stop_name} not found in stops list`);
-        } else {
-          setDepartureStop(null);
-        }
-      } else {
-        setDepartureStop(unionStop);
-        if (selectedStop) {
-          const found = typedStops.find(s => s.stop_id === selectedStop.stop_id);
-          setArrivalStop(found || null);
-          if (!found) console.warn(`Selected stop ${selectedStop.stop_name} not found in stops list`);
-        } else {
-          setArrivalStop(null);
-        }
-      }
-      
-      if (typedStops.length === 0) {
-        Alert.alert('No Stops', `No stops found for ${effectiveRouteGroup.routeNumber} on this date.`);
-      }
-    } catch (error) {
-      console.error('Failed to load stops:', error);
-      Alert.alert('Error', 'Failed to load stops. Please try again.');
-    }
-  };
+    };
+    init();
+  }, []);
 
-  const handleMapStopSelect = (stop: any, type: 'departure' | 'arrival') => {
-    if (type === 'departure') {
-      setDepartureStop(stop ? { stop_id: stop.stop_id, stop_name: stop.stop_name } : null);
-    } else {
-      setArrivalStop(stop ? { stop_id: stop.stop_id, stop_name: stop.stop_name } : null);
-    }
-  };
+  useEffect(() => {
+    if (selectedRoute && departureStop) loadRecentSchedule();
+  }, [selectedRoute, departureStop, arrivalStop, selectedDate]);
 
-  const handleNearbyRouteSelect = (route: {
-    routeId: string;
-    routeShortName: string;
-    variant?: string;
-    direction?: 'inbound' | 'outbound';
-    stopId?: string;
-    stopName?: string;
-  }) => {
-    console.log('Selected route from map:', route);
-    const routeGroup = routeGroups.find(rg => rg.routeNumber === route.routeShortName);
-    if (!routeGroup) {
-      Alert.alert('Route Not Found', `Could not find route ${route.routeShortName}`);
-      return;
-    }
-    setSelectedRouteGroup(routeGroup);
-    setSelectedDirection(route.direction || null);
-    const selectedStop = route.stopId ? { stop_id: route.stopId, stop_name: route.stopName || '' } : undefined;
-    handleDirectionSelect(route.direction!, routeGroup, selectedStop);
-  };
-
-  const onDateChange = (event: any, selectedDate?: Date) => {
-    if (Platform.OS === 'android') setShowDatePicker(false);
-    if (selectedDate) {
-      setSelectedDate(selectedDate);
-      setSelectedDirection(null);
-      setSelectedRoute(null);
-      setDepartureStop(null);
-      setArrivalStop(null);
-      setSchedule([]);
-      setSchedulesWithArrival([]);
-      setNextSchedule(null);
-      setStops([]);
-    }
-  };
-
-  const loadRecentSchedule = async (): Promise<void> => {
-    if (!selectedRoute || !departureStop) return;
-    setLoadingSchedule(true);
-    try {
-      const queryDate = selectedDate;
-      const today = new Date();
-      const isToday = queryDate.toDateString() === today.toDateString();
-      const serviceId = formatDate(queryDate).replace(/-/g, '');
-      
-      let tripsQuery = `
-        SELECT trip_id, route_variant, direction_id
-        FROM trips 
-        WHERE route_id = ? AND service_id = ? AND direction_id = ?
-      `;
-      const queryParams: (string | number)[] = [
-        selectedRoute.route_id, serviceId, selectedRoute.direction_id ?? 0
-      ];
-      if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
-        tripsQuery += ` AND route_variant = ?`;
-        queryParams.push(selectedRoute.variant);
-      }
-      
-      let trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
-      
-      if (!selectedRoute.isBus && trips.length > 0) {
-        trips = trips.filter(trip => getDirectionFromTripId(trip.trip_id) === selectedDirection);
-      }
-      
-      if (trips.length === 0) {
-        setLoadingSchedule(false);
-        Alert.alert('No Schedule', `No ${selectedDirection} trips found for this date`);
-        return;
-      }
-      
-      const tripIds = [...new Set(trips.map(t => t.trip_id).filter(id => id && id !== ''))];
-      
-      if (arrivalStop) {
-        setShowArrivalTime(true);
-        const stopTimesMap = await dbService.getStopTimesForTripsBatchTwoStops(
-          tripIds, departureStop.stop_id, arrivalStop.stop_id
-        );
-        const allSchedules: TripWithArrival[] = [];
-        for (const [tripId, stops] of stopTimesMap.entries()) {
-          if (!stops.departure || !stops.arrival) continue;
-          let departureTime: number, arrivalTime: number;
-          if (stops.departure.stop_sequence < stops.arrival.stop_sequence) {
-            departureTime = stops.departure.departure_time;
-            arrivalTime = stops.arrival.arrival_time;
-          } else {
-            departureTime = stops.arrival.departure_time;
-            arrivalTime = stops.departure.arrival_time;
-          }
-          if (!departureTime || !arrivalTime) continue;
-          const travelMinutes = Math.round((arrivalTime - departureTime) / 60);
-          if (travelMinutes <= 0) continue;
-          allSchedules.push({
-            trip_id: tripId,
-            departure_time: departureTime,
-            arrival_time: arrivalTime,
-            destination: selectedRoute.route_short_name,
-            departure_stop: departureStop.stop_id,
-            arrival_stop: arrivalStop.stop_id,
-            travel_time_minutes: travelMinutes
-          });
-        }
-        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-        const finalSchedules = isToday ? allSchedules.filter(r => r.departure_time >= currentSeconds) : allSchedules;
-        setSchedulesWithArrival(finalSchedules);
-        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-      } else {
-        setShowArrivalTime(false);
-        const stopTimesMap = await dbService.getStopTimesForTripsBatch(tripIds, departureStop.stop_id);
-        const allSchedules: ScheduleItem[] = [];
-        for (const [tripId, stopTime] of stopTimesMap.entries()) {
-          if (!stopTime || !stopTime.departure_time) continue;
-          allSchedules.push({
-            trip_id: tripId,
-            departure_time: stopTime.departure_time,
-            destination: selectedRoute.route_short_name,
-            stop_sequence: stopTime.stop_sequence || 0
-          });
-        }
-        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-        const finalSchedules = isToday ? allSchedules.filter(r => r.departure_time >= currentSeconds) : allSchedules;
-        setSchedule(finalSchedules);
-        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-      }
-    } catch (error) {
-      console.error('Failed to load schedule:', error);
-      Alert.alert('Error', 'Failed to load schedule. Please try again.');
-    } finally {
-      setLoadingSchedule(false);
-    }
-  };
-
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await loadRoutesWithDirections();
-    if (selectedRoute && departureStop) await loadRecentSchedule();
-    setRefreshing(false);
-  };
-
+  // ========== UI Helpers ==========
   const getFormattedRouteLabel = (routeGroup: RouteGroup): string => {
     const routeType = routeGroup.isBus ? '🚌 Bus' : '🚆 Train';
     return `${routeGroup.routeNumber} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
@@ -619,20 +614,6 @@ export default function HomeScreen() {
     return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   };
 
-  const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
-    setSelectedRouteGroup(routeGroup);
-    setSelectedDirection(null);
-    setSelectedRoute(null);
-    setDepartureStop(null);
-    setArrivalStop(null);
-    setSchedule([]);
-    setSchedulesWithArrival([]);
-    setNextSchedule(null);
-    setShowArrivalTime(false);
-    setShowMap(false);
-    setStops([]);
-  };
-
   const renderSection = ({ item }: { item: any }) => item.component;
 
   const getSections = () => {
@@ -646,27 +627,29 @@ export default function HomeScreen() {
       component: (
         <View style={styles.header}>
           <Text style={styles.title}>GO Transit Schedules</Text>
-          <TouchableOpacity style={styles.searchMapButton} onPress={() => setShowNearbyMap(true)}>
-            <Text style={styles.searchMapButtonText}>🗺️ Nearby</Text>
-          </TouchableOpacity>
         </View>
       ),
     });
 
-    // Favorites section (if any)
-    if (favorites.length > 0) {
-      sections.push({
-        key: 'favorites',
-        component: (
-          <View style={styles.favoritesSection}>
+    // Favorites section (always visible)
+    sections.push({
+      key: 'favorites',
+      component: (
+        <View style={styles.favoritesSection}>
+          <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>⭐ Favorites ({favorites.length}/4)</Text>
+            <TouchableOpacity style={styles.nearbyButton} onPress={() => setShowNearbyMap(true)}>
+              <Text style={styles.nearbyButtonText}>🗺️ Nearby</Text>
+            </TouchableOpacity>
+          </View>
+          {favorites.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.favoritesScroll}>
               {favorites.map(fav => (
                 <View key={fav.id} style={styles.favoriteCard}>
                   <TouchableOpacity style={styles.favoriteContent} onPress={() => loadFavorite(fav)}>
                     <Text style={styles.favoriteRoute}>{fav.routeShortName}</Text>
                     <Text style={styles.favoriteStops} numberOfLines={1}>
-                      {fav.direction === 'inbound' 
+                      {fav.direction === 'inbound'
                         ? `${fav.departureStop.stop_name} → Union`
                         : `Union → ${fav.arrivalStop.stop_name}`}
                     </Text>
@@ -677,10 +660,12 @@ export default function HomeScreen() {
                 </View>
               ))}
             </ScrollView>
-          </View>
-        ),
-      });
-    }
+          ) : (
+            <Text style={styles.emptyFavoritesText}>No favorites saved yet. Save one below.</Text>
+          )}
+        </View>
+      ),
+    });
 
     // Route selection
     sections.push({
@@ -694,6 +679,7 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
           <SearchablePicker
+            key={selectedRouteGroup?.routeNumber || 'no-route'}
             items={routeItems}
             placeholder="Search GO line..."
             onValueChange={(value: string) => {
@@ -758,7 +744,7 @@ export default function HomeScreen() {
       });
     }
 
-    // Departure & Arrival stops
+    // Departure / Arrival stops
     if (selectedRoute && stops.length > 0) {
       sections.push({
         key: 'departureStop',
@@ -790,7 +776,7 @@ export default function HomeScreen() {
       });
     }
 
-    // Save as Favorite button (if both stops selected and not already saved and less than 4)
+    // Save as Favorite button
     if (selectedRouteGroup && selectedDirection && departureStop && arrivalStop && favorites.length < 4) {
       const alreadySaved = favorites.some(
         fav => fav.routeShortName === selectedRouteGroup.routeNumber &&
@@ -812,7 +798,7 @@ export default function HomeScreen() {
       }
     }
 
-    // Loading schedule indicator
+    // Loading indicator
     if (loadingSchedule) {
       sections.push({
         key: 'loading',
@@ -942,18 +928,51 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f5f5f5', padding: 20 },
   loadingText: { marginTop: 20, fontSize: 16, color: '#666' },
   loaderContainer: { marginTop: 20, alignItems: 'center', padding: 20 },
-  header: { backgroundColor: '#00A1E0', padding: 20, alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  header: {
+    backgroundColor: '#00A1E0',
+    padding: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   title: { fontSize: 24, fontWeight: 'bold', color: '#fff' },
-  searchMapButton: { backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, marginLeft: 10 },
-  searchMapButtonText: { color: '#fff', fontSize: 14, fontWeight: '600' },
   favoritesSection: { marginHorizontal: 15, marginTop: 10, marginBottom: 5 },
   favoritesScroll: { flexDirection: 'row', marginTop: 8 },
-  favoriteCard: { backgroundColor: '#f0f8ff', borderRadius: 12, padding: 10, marginRight: 12, minWidth: 160, flexDirection: 'row', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2 },
+  favoriteCard: {
+    backgroundColor: '#f0f8ff',
+    borderRadius: 12,
+    padding: 10,
+    marginRight: 12,
+    minWidth: 160,
+    flexDirection: 'row',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
   favoriteContent: { flex: 1 },
   favoriteRoute: { fontSize: 16, fontWeight: 'bold', color: '#00A1E0' },
   favoriteStops: { fontSize: 12, color: '#555', marginTop: 4 },
   deleteFavorite: { marginLeft: 8, padding: 4 },
   deleteFavoriteText: { fontSize: 16, color: '#ff4444', fontWeight: 'bold' },
+  nearbyButton: {
+    backgroundColor: '#00A1E0',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  nearbyButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  emptyFavoritesText: {
+    textAlign: 'center',
+    color: '#888',
+    fontSize: 14,
+    marginVertical: 10,
+  },
   section: { backgroundColor: '#fff', margin: 15, padding: 15, borderRadius: 10, elevation: 2 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
