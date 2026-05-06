@@ -52,7 +52,8 @@
           "locationAlwaysAndWhenInUsePermission": "Allow GTA Transit to use your location to show nearby stops and your position on the route map.",
           "locationWhenInUsePermission": "Allow GTA Transit to use your location to show nearby stops and your position on the route map."
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "extra": {
       "eas": {

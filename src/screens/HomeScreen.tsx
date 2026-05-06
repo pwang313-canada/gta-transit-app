@@ -1,5 +1,6 @@
 // src/screens/HomeScreen.tsx
 import DateTimePicker from '@react-native-community/datetimepicker';
+import * as SecureStore from 'expo-secure-store';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -7,6 +8,7 @@ import {
   FlatList,
   Platform,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -57,6 +59,19 @@ interface RouteGroup {
   variant: string;
 }
 
+interface Favorite {
+  id: string;
+  routeShortName: string;
+  variant: string;
+  isBus: boolean;
+  direction: 'inbound' | 'outbound';
+  departureStop: Stop;
+  arrivalStop: Stop;
+  routeLongName: string;
+}
+
+const STORAGE_KEY = 'go_favorites';
+
 const secondsToTimeString = (seconds: number): string => {
   if (!seconds && seconds !== 0) return '';
   let adjustedSeconds = seconds;
@@ -97,10 +112,87 @@ export default function HomeScreen() {
   const [showNearbyMap, setShowNearbyMap] = useState<boolean>(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
+  const [favorites, setFavorites] = useState<Favorite[]>([]);
 
   const flatListRef = useRef<FlatList>(null);
   const dbService = DatabaseService;
 
+  // Load favorites on mount
+  useEffect(() => {
+    loadFavorites();
+  }, []);
+
+  const loadFavorites = async () => {
+    try {
+      const stored = await SecureStore.getItemAsync(STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setFavorites(parsed);
+      }
+    } catch (error) {
+      console.error('Failed to load favorites:', error);
+      // If SecureStore fails, fallback to empty array
+      setFavorites([]);
+    }
+  };
+
+  const saveFavorites = async (newFavorites: Favorite[]) => {
+    try {
+      await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(newFavorites));
+      setFavorites(newFavorites);
+    } catch (error) {
+      console.error('Failed to save favorites:', error);
+      Alert.alert('Save Failed', 'Could not save favorite. Please try again.');
+    }
+  };
+
+  const addFavorite = () => {
+    if (!selectedRouteGroup || !selectedDirection || !departureStop || !arrivalStop) {
+      Alert.alert('Cannot Save', 'Please select a route, direction, departure and arrival stops first.');
+      return;
+    }
+    if (favorites.length >= 2) {
+      Alert.alert('Limit Reached', 'You can only save up to 2 favorites. Delete one first.');
+      return;
+    }
+    const newFavorite: Favorite = {
+      id: Date.now().toString(),
+      routeShortName: selectedRouteGroup.routeNumber,
+      variant: selectedRouteGroup.variant,
+      isBus: selectedRouteGroup.isBus,
+      direction: selectedDirection,
+      departureStop,
+      arrivalStop,
+      routeLongName: selectedRouteGroup.routeLongName,
+    };
+    const newFavorites = [...favorites, newFavorite];
+    saveFavorites(newFavorites);
+    Alert.alert('Saved', 'Route saved to favorites.');
+  };
+
+  const deleteFavorite = (id: string) => {
+    const newFavorites = favorites.filter(f => f.id !== id);
+    saveFavorites(newFavorites);
+  };
+
+  const loadFavorite = async (fav: Favorite) => {
+    // Find the current matching route group (route number + variant)
+    const routeGroup = routeGroups.find(
+      rg => rg.routeNumber === fav.routeShortName && rg.variant === fav.variant
+    );
+    if (!routeGroup) {
+      Alert.alert('Route Not Found', `Route ${fav.routeShortName} (${fav.variant}) is not available in current data.`);
+      return;
+    }
+    // Determine which stop is the non-Union one (the one to pre‑fill)
+    const unionNameLower = 'union';
+    const isDepartureNonUnion = !fav.departureStop.stop_name.toLowerCase().includes(unionNameLower);
+    const selectedStop = isDepartureNonUnion ? fav.departureStop : fav.arrivalStop;
+    // Call direction select with the route group and the chosen stop
+    await handleDirectionSelect(fav.direction, routeGroup, selectedStop);
+  };
+
+  // Reset when route group changes
   useEffect(() => {
     setSelectedDirection(null);
     setSelectedRoute(null);
@@ -113,6 +205,7 @@ export default function HomeScreen() {
     setShowMap(false);
   }, [selectedRouteGroup]);
 
+  // Initial DB load
   useEffect(() => {
     const init = async () => {
       try {
@@ -128,6 +221,7 @@ export default function HomeScreen() {
     init();
   }, []);
 
+  // Load schedule when stops are ready
   useEffect(() => {
     if (selectedRoute && departureStop) loadRecentSchedule();
   }, [selectedRoute, departureStop, arrivalStop, selectedDate]);
@@ -221,20 +315,6 @@ export default function HomeScreen() {
     }
   };
 
-  const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
-    setSelectedRouteGroup(routeGroup);
-    setSelectedDirection(null);
-    setSelectedRoute(null);
-    setDepartureStop(null);
-    setArrivalStop(null);
-    setSchedule([]);
-    setSchedulesWithArrival([]);
-    setNextSchedule(null);
-    setShowArrivalTime(false);
-    setShowMap(false);
-    setStops([]);
-  };
-
   const findUnionStation = (stopsList: Stop[]): Stop | null =>
     stopsList.find(stop => 
       stop.stop_name.toLowerCase().includes('union station') ||
@@ -245,11 +325,10 @@ export default function HomeScreen() {
   const getDirectionFilter = (direction: 'inbound' | 'outbound', isBus: boolean): number =>
     isBus ? (direction === 'inbound' ? 0 : 1) : (direction === 'inbound' ? 1 : 0);
 
-  // Updated: accepts optional routeGroup and selectedStop
   const handleDirectionSelect = async (
     direction: 'inbound' | 'outbound',
     routeGroup?: RouteGroup,
-    selectedStop?: { stop_id: string; stop_name: string }
+    selectedStop?: Stop
   ): Promise<void> => {
     const effectiveRouteGroup = routeGroup || selectedRouteGroup;
     if (!effectiveRouteGroup) return;
@@ -342,7 +421,6 @@ export default function HomeScreen() {
       
       const unionStop = findUnionStation(typedStops);
       
-      // Pre-select stops based on direction and optional selectedStop from map
       if (direction === 'inbound') {
         setArrivalStop(unionStop);
         if (selectedStop) {
@@ -394,12 +472,9 @@ export default function HomeScreen() {
       Alert.alert('Route Not Found', `Could not find route ${route.routeShortName}`);
       return;
     }
-    // Set the UI state immediately
     setSelectedRouteGroup(routeGroup);
     setSelectedDirection(route.direction || null);
-    
     const selectedStop = route.stopId ? { stop_id: route.stopId, stop_name: route.stopName || '' } : undefined;
-    // Call handleDirectionSelect directly with the routeGroup to avoid state staleness
     handleDirectionSelect(route.direction!, routeGroup, selectedStop);
   };
 
@@ -544,6 +619,20 @@ export default function HomeScreen() {
     return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
   };
 
+  const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
+    setSelectedRouteGroup(routeGroup);
+    setSelectedDirection(null);
+    setSelectedRoute(null);
+    setDepartureStop(null);
+    setArrivalStop(null);
+    setSchedule([]);
+    setSchedulesWithArrival([]);
+    setNextSchedule(null);
+    setShowArrivalTime(false);
+    setShowMap(false);
+    setStops([]);
+  };
+
   const renderSection = ({ item }: { item: any }) => item.component;
 
   const getSections = () => {
@@ -551,6 +640,7 @@ export default function HomeScreen() {
     const today = new Date();
     const isToday = selectedDate.toDateString() === today.toDateString();
 
+    // Header
     sections.push({
       key: 'header',
       component: (
@@ -563,6 +653,36 @@ export default function HomeScreen() {
       ),
     });
 
+    // Favorites section (if any)
+    if (favorites.length > 0) {
+      sections.push({
+        key: 'favorites',
+        component: (
+          <View style={styles.favoritesSection}>
+            <Text style={styles.sectionTitle}>⭐ Favorites ({favorites.length}/4)</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.favoritesScroll}>
+              {favorites.map(fav => (
+                <View key={fav.id} style={styles.favoriteCard}>
+                  <TouchableOpacity style={styles.favoriteContent} onPress={() => loadFavorite(fav)}>
+                    <Text style={styles.favoriteRoute}>{fav.routeShortName}</Text>
+                    <Text style={styles.favoriteStops} numberOfLines={1}>
+                      {fav.direction === 'inbound' 
+                        ? `${fav.departureStop.stop_name} → Union`
+                        : `Union → ${fav.arrivalStop.stop_name}`}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.deleteFavorite} onPress={() => deleteFavorite(fav.id)}>
+                    <Text style={styles.deleteFavoriteText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        ),
+      });
+    }
+
+    // Route selection
     sections.push({
       key: 'routeSelection',
       component: (
@@ -586,6 +706,7 @@ export default function HomeScreen() {
       ),
     });
 
+    // Direction toggle
     if (selectedRouteGroup) {
       sections.push({
         key: 'directionToggle',
@@ -611,6 +732,7 @@ export default function HomeScreen() {
       });
     }
 
+    // Map toggle
     if (selectedRoute && selectedDirection) {
       sections.push({
         key: 'mapControls',
@@ -636,6 +758,7 @@ export default function HomeScreen() {
       });
     }
 
+    // Departure & Arrival stops
     if (selectedRoute && stops.length > 0) {
       sections.push({
         key: 'departureStop',
@@ -667,6 +790,29 @@ export default function HomeScreen() {
       });
     }
 
+    // Save as Favorite button (if both stops selected and not already saved and less than 4)
+    if (selectedRouteGroup && selectedDirection && departureStop && arrivalStop && favorites.length < 4) {
+      const alreadySaved = favorites.some(
+        fav => fav.routeShortName === selectedRouteGroup.routeNumber &&
+               fav.direction === selectedDirection &&
+               fav.departureStop.stop_id === departureStop.stop_id &&
+               fav.arrivalStop.stop_id === arrivalStop.stop_id
+      );
+      if (!alreadySaved) {
+        sections.push({
+          key: 'saveFavorite',
+          component: (
+            <View style={styles.saveFavoriteContainer}>
+              <TouchableOpacity style={styles.saveFavoriteButton} onPress={addFavorite}>
+                <Text style={styles.saveFavoriteText}>⭐ Save as Favorite</Text>
+              </TouchableOpacity>
+            </View>
+          ),
+        });
+      }
+    }
+
+    // Loading schedule indicator
     if (loadingSchedule) {
       sections.push({
         key: 'loading',
@@ -679,6 +825,7 @@ export default function HomeScreen() {
       });
     }
 
+    // Next schedule card
     if (nextSchedule && !loadingSchedule) {
       sections.push({
         key: 'nextSchedule',
@@ -711,6 +858,7 @@ export default function HomeScreen() {
       });
     }
 
+    // Full schedule lists
     if (!loadingSchedule && showArrivalTime && schedulesWithArrival.length > 0) {
       sections.push({
         key: 'scheduleWithArrival',
@@ -749,6 +897,7 @@ export default function HomeScreen() {
         ),
       });
     }
+
     return sections;
   };
 
@@ -797,6 +946,14 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: 'bold', color: '#fff' },
   searchMapButton: { backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, marginLeft: 10 },
   searchMapButtonText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  favoritesSection: { marginHorizontal: 15, marginTop: 10, marginBottom: 5 },
+  favoritesScroll: { flexDirection: 'row', marginTop: 8 },
+  favoriteCard: { backgroundColor: '#f0f8ff', borderRadius: 12, padding: 10, marginRight: 12, minWidth: 160, flexDirection: 'row', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2 },
+  favoriteContent: { flex: 1 },
+  favoriteRoute: { fontSize: 16, fontWeight: 'bold', color: '#00A1E0' },
+  favoriteStops: { fontSize: 12, color: '#555', marginTop: 4 },
+  deleteFavorite: { marginLeft: 8, padding: 4 },
+  deleteFavoriteText: { fontSize: 16, color: '#ff4444', fontWeight: 'bold' },
   section: { backgroundColor: '#fff', margin: 15, padding: 15, borderRadius: 10, elevation: 2 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
@@ -812,6 +969,9 @@ const styles = StyleSheet.create({
   mapToggleButtonActive: { backgroundColor: '#00A1E0', borderColor: '#00A1E0' },
   mapToggleText: { fontSize: 14, fontWeight: '600', color: '#666' },
   mapToggleTextActive: { color: '#fff' },
+  saveFavoriteContainer: { marginHorizontal: 15, marginBottom: 10 },
+  saveFavoriteButton: { backgroundColor: '#FFC107', paddingVertical: 12, borderRadius: 25, alignItems: 'center' },
+  saveFavoriteText: { fontSize: 16, fontWeight: 'bold', color: '#333' },
   nextScheduleCard: { backgroundColor: '#00A1E0', margin: 15, padding: 20, borderRadius: 15, alignItems: 'center', elevation: 4 },
   nextScheduleTime: { color: '#fff', fontSize: 36, fontWeight: 'bold' },
   nextScheduleTimeContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20, marginVertical: 10 },
