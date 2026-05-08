@@ -187,11 +187,9 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
           s.stop_name,
           CAST(s.stop_lat AS REAL) as stop_lat,
           CAST(s.stop_lon AS REAL) as stop_lon,
-          GROUP_CONCAT(DISTINCT r.route_id || '|' || r.route_short_name || '|' || COALESCE(t.route_variant, '')) as route_data
+          GROUP_CONCAT(DISTINCT sr.route_id || '|' || sr.route_short_name || '|' || COALESCE(sr.route_variant, '')) as route_data
         FROM stops s
-        INNER JOIN stop_times st ON s.stop_id = st.stop_id
-        INNER JOIN trips t ON st.trip_id = t.trip_id
-        INNER JOIN routes r ON t.route_id = r.route_id
+        LEFT JOIN stop_routes sr ON s.stop_id = sr.stop_id
         WHERE s.stop_lat BETWEEN ? AND ?
           AND s.stop_lon BETWEEN ? AND ?
           AND s.stop_lat != 0
