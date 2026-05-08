@@ -184,8 +184,6 @@ export default function HomeScreen() {
       Alert.alert('Route Not Found', `Route ${fav.routeShortName} (${fav.variant}) is not available.`);
       return;
     }
-    // Explicitly set the selected route group before loading direction
-    setSelectedRouteGroup(routeGroup);
     const unionNameLower = 'union';
     const isDepartureNonUnion = !fav.departureStop.stop_name.toLowerCase().includes(unionNameLower);
     const selectedStop = isDepartureNonUnion ? fav.departureStop : fav.arrivalStop;
@@ -679,7 +677,6 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
           <SearchablePicker
-            key={selectedRouteGroup?.routeNumber || 'no-route'}
             items={routeItems}
             placeholder="Search GO line..."
             onValueChange={(value: string) => {
