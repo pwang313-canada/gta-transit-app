@@ -18,6 +18,7 @@ import NearbyStationsMap from '../components/NearbyStationsMap';
 import RouteMapView from '../components/RouteMapView';
 import SearchablePicker from '../components/SearchableRoutePicker';
 import DatabaseService from '../services/DatabaseService';
+import { getScheduleData, getTripsForStop } from '../services/scheduleService';
 
 // ========== Type Definitions ==========
 interface Route {
@@ -215,6 +216,40 @@ export default function HomeScreen() {
   const getDirectionFilter = (direction: 'inbound' | 'outbound', isBus: boolean): number =>
     isBus ? (direction === 'inbound' ? 0 : 1) : (direction === 'inbound' ? 1 : 0);
 
+  // ========== API VERIFICATION FUNCTION ==========
+  const testApiForRoute = async (routeShortName: string, variant: string, direction: 'inbound' | 'outbound', date: Date) => {
+    const dateStr = `${date.getFullYear()}${String(date.getMonth()+1).padStart(2,'0')}${String(date.getDate()).padStart(2,'0')}`;
+    console.log(`🔍 Verifying API for route ${routeShortName}, variant ${variant}, direction ${direction}, date ${dateStr}`);
+    try {
+      const fullSchedule = await getScheduleData(dateStr);
+      console.log('📡 Full schedule structure (first 500 chars):', JSON.stringify(fullSchedule).substring(0, 500));
+      
+      const line = fullSchedule.AllLines.Line.find(l => l.Code === routeShortName);
+      if (!line) {
+        console.warn(`Route ${routeShortName} not found in API response`);
+        return;
+      }
+      console.log(`✅ Found route: ${line.Name} (${line.Code})`);
+      
+      const variantObj = line.Variant.find(v => 
+        v.Code === variant && 
+        (direction === 'inbound' ? v.Direction === 'Inbound' : v.Direction === 'Outbound')
+      );
+      if (!variantObj) {
+        console.warn(`Variant ${variant} / direction ${direction} not found`);
+        return;
+      }
+      console.log(`✅ Variant: ${variantObj.Display} (Direction: ${variantObj.Direction})`);
+      console.log(`📅 Trips available: ${variantObj.Trips?.length || 0}`);
+      if (variantObj.Trips && variantObj.Trips.length > 0) {
+        console.log(`🕒 First trip sample:`, variantObj.Trips[0]);
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error('API verification failed:', errorMsg);
+    }
+  };
+
   const handleDirectionSelect = async (
     direction: 'inbound' | 'outbound',
     routeGroup?: RouteGroup,
@@ -295,6 +330,14 @@ export default function HomeScreen() {
         isBus: effectiveRouteGroup.isBus
       };
       setSelectedRoute(selectedRouteObj);
+
+      // 🔍 Verify API response for this route/direction
+      await testApiForRoute(
+        effectiveRouteGroup.routeNumber,
+        effectiveRouteGroup.variant,
+        direction,
+        selectedDate
+      );
 
       const variantParam = effectiveRouteGroup.isBus ? effectiveRouteGroup.variant : '';
       const stopsList = await dbService.getStopsByRoute(
@@ -382,93 +425,47 @@ export default function HomeScreen() {
     setLoadingSchedule(true);
     try {
       const queryDate = selectedDate;
-      const today = new Date();
-      const isToday = queryDate.toDateString() === today.toDateString();
-      const serviceId = formatDate(queryDate).replace(/-/g, '');
+      const isToday = queryDate.toDateString() === new Date().toDateString();
+      const routeShortName = selectedRoute.route_short_name;
+      const variant = selectedRoute.variant || routeShortName;
+      const direction = selectedDirection!;
 
-      let tripsQuery = `
-        SELECT trip_id, route_variant, direction_id
-        FROM trips 
-        WHERE route_id = ? AND service_id = ? AND direction_id = ?
-      `;
-      const queryParams: (string | number)[] = [
-        selectedRoute.route_id, serviceId, selectedRoute.direction_id ?? 0
-      ];
-      if (selectedRoute.variant && selectedRoute.variant !== selectedRoute.route_short_name && selectedRouteGroup?.isBus) {
-        tripsQuery += ` AND route_variant = ?`;
-        queryParams.push(selectedRoute.variant);
-      }
+      console.log(`🚀 Loading schedule via API for ${routeShortName}, ${direction}, stop ${departureStop.stop_id}`);
 
-      let trips = await dbService.executeCustomQuery<any>(tripsQuery, queryParams);
+      const trips = await getTripsForStop(
+        routeShortName,
+        variant,
+        direction,
+        departureStop.stop_id,
+        queryDate
+      );
 
-      if (!selectedRoute.isBus && trips.length > 0) {
-        trips = trips.filter(trip => getDirectionFromTripId(trip.trip_id) === selectedDirection);
-      }
-
-      if (trips.length === 0) {
+      if (!trips.length) {
+        Alert.alert('No Schedule', `No trips found for ${routeShortName} on ${formatDate(queryDate)}`);
+        setSchedule([]);
+        setNextSchedule(null);
         setLoadingSchedule(false);
-        Alert.alert('No Schedule', `No ${selectedDirection} trips found for this date`);
         return;
       }
 
-      const tripIds = [...new Set(trips.map(t => t.trip_id).filter(id => id && id !== ''))];
+      trips.sort((a, b) => a.departure_time - b.departure_time);
+      const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
+      const futureTrips = isToday ? trips.filter(t => t.departure_time >= currentSeconds) : trips;
 
-      if (arrivalStop) {
-        setShowArrivalTime(true);
-        const stopTimesMap = await dbService.getStopTimesForTripsBatchTwoStops(
-          tripIds, departureStop.stop_id, arrivalStop.stop_id
-        );
-        const allSchedules: TripWithArrival[] = [];
-        for (const [tripId, stops] of stopTimesMap.entries()) {
-          if (!stops.departure || !stops.arrival) continue;
-          let departureTime: number, arrivalTime: number;
-          if (stops.departure.stop_sequence < stops.arrival.stop_sequence) {
-            departureTime = stops.departure.departure_time;
-            arrivalTime = stops.arrival.arrival_time;
-          } else {
-            departureTime = stops.arrival.departure_time;
-            arrivalTime = stops.departure.arrival_time;
-          }
-          if (!departureTime || !arrivalTime) continue;
-          const travelMinutes = Math.round((arrivalTime - departureTime) / 60);
-          if (travelMinutes <= 0) continue;
-          allSchedules.push({
-            trip_id: tripId,
-            departure_time: departureTime,
-            arrival_time: arrivalTime,
-            destination: selectedRoute.route_short_name,
-            departure_stop: departureStop.stop_id,
-            arrival_stop: arrivalStop.stop_id,
-            travel_time_minutes: travelMinutes
-          });
-        }
-        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-        const finalSchedules = isToday ? allSchedules.filter(r => r.departure_time >= currentSeconds) : allSchedules;
-        setSchedulesWithArrival(finalSchedules);
-        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-      } else {
-        setShowArrivalTime(false);
-        const stopTimesMap = await dbService.getStopTimesForTripsBatch(tripIds, departureStop.stop_id);
-        const allSchedules: ScheduleItem[] = [];
-        for (const [tripId, stopTime] of stopTimesMap.entries()) {
-          if (!stopTime || !stopTime.departure_time) continue;
-          allSchedules.push({
-            trip_id: tripId,
-            departure_time: stopTime.departure_time,
-            destination: selectedRoute.route_short_name,
-            stop_sequence: stopTime.stop_sequence || 0
-          });
-        }
-        allSchedules.sort((a, b) => a.departure_time - b.departure_time);
-        const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-        const finalSchedules = isToday ? allSchedules.filter(r => r.departure_time >= currentSeconds) : allSchedules;
-        setSchedule(finalSchedules);
-        setNextSchedule(finalSchedules.length > 0 ? finalSchedules[0] : null);
-      }
+      const scheduleItems: ScheduleItem[] = futureTrips.map(t => ({
+        trip_id: t.trip_id,
+        destination: t.destination,
+        departure_time: t.departure_time,
+        stop_sequence: t.stop_sequence || 0
+      }));
+
+      setSchedule(scheduleItems);
+      setNextSchedule(scheduleItems.length > 0 ? scheduleItems[0] : null);
+      setShowArrivalTime(false); // Arrival time not yet supported via API
+      console.log(`✅ Loaded ${scheduleItems.length} schedule items from API`);
     } catch (error) {
-      console.error('Failed to load schedule:', error);
-      Alert.alert('Error', 'Failed to load schedule. Please try again.');
+      console.error('Failed to load schedule via API:', error);
+      Alert.alert('Error', 'Could not fetch schedule from API. Please try again.');
     } finally {
       setLoadingSchedule(false);
     }
@@ -585,6 +582,7 @@ export default function HomeScreen() {
     init();
   }, []);
 
+  // Reload schedule when dependencies change (using API now)
   useEffect(() => {
     if (selectedRoute && departureStop) loadRecentSchedule();
   }, [selectedRoute, departureStop, arrivalStop, selectedDate]);
@@ -833,6 +831,12 @@ export default function HomeScreen() {
               <>
                 <Text style={styles.nextScheduleTime}>{secondsToTimeString((nextSchedule as ScheduleItem).departure_time)}</Text>
                 {isToday && <Text style={styles.nextScheduleWait}>{calculateWaitTime((nextSchedule as ScheduleItem).departure_time)}</Text>}
+                {/* Refresh button for today's schedule */}
+                {isToday && (
+                  <TouchableOpacity style={styles.refreshButton} onPress={loadRecentSchedule}>
+                    <Text style={styles.refreshButtonText}>⟳ Refresh</Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
             <Text style={styles.nextScheduleDestination}>→ {nextSchedule.destination || 'Final Stop'}</Text>
@@ -997,6 +1001,8 @@ const styles = StyleSheet.create({
   nextScheduleWait: { color: '#fff', fontSize: 16, marginTop: 8, opacity: 0.9 },
   nextScheduleDestination: { color: '#fff', fontSize: 14, marginTop: 8, opacity: 0.8 },
   travelTimeInfo: { color: '#fff', fontSize: 14, marginTop: 8, opacity: 0.9 },
+  refreshButton: { marginTop: 12, backgroundColor: '#fff', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#00A1E0' },
+  refreshButtonText: { color: '#00A1E0', fontWeight: '600' },
   scheduleSection: { backgroundColor: '#fff', margin: 15, padding: 15, borderRadius: 10 },
   scheduleItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   timeContainer: { flexDirection: 'row', alignItems: 'center', gap: 8 },

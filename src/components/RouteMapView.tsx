@@ -75,7 +75,6 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       });
       
       // ORIENT stops + shape based on direction
-      // GTFS stop_times are ordered by trip direction. We need to flip them
       // when the user selects the opposite direction.
       let shapeCoords = shapeData && shapeData.length > 0 ? [...shapeData] : [];
       

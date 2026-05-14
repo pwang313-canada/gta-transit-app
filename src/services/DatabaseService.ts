@@ -198,12 +198,12 @@ class DatabaseService {
   async getStopsByRoute(routeId: string | number, variant?: string, date?: Date): Promise<Stop[]> {
     const db = await this.getDatabase();
     const routeIdStr = this.ensureString(routeId);
-    console.log(`getStopsByRoute called: routeId=${routeIdStr}, variant=${variant}`);
     
     try {
       const queryDate = date || new Date();
       const serviceId = this.formatDateToServiceId(queryDate);
-      
+      console.log(`getStopsByRoute called: routeId=${routeIdStr}, variant=${variant}`);
+      console.log(`Service ID: ${serviceId}`);
       let sampleTripQuery = `
         SELECT trip_id, route_variant, service_id, direction_id 
         FROM trips 
