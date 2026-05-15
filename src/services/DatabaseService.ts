@@ -27,6 +27,8 @@ interface TripWithArrival {
   travel_time_minutes: number;
 }
 
+const formatDate = (date: Date): string => date.toLocaleDateString('en-CA');
+
 class DatabaseService {
   private static instance: DatabaseService;
   private db: SQLite.SQLiteDatabase | null = null;
@@ -195,53 +197,24 @@ class DatabaseService {
     }
   }
 
-  async getStopsByRoute(routeId: string | number, variant?: string, date?: Date): Promise<Stop[]> {
-    const db = await this.getDatabase();
-    const routeIdStr = this.ensureString(routeId);
-    
-    try {
-      const queryDate = date || new Date();
-      const serviceId = this.formatDateToServiceId(queryDate);
-      console.log(`getStopsByRoute called: routeId=${routeIdStr}, variant=${variant}`);
-      console.log(`Service ID: ${serviceId}`);
-      let sampleTripQuery = `
-        SELECT trip_id, route_variant, service_id, direction_id 
-        FROM trips 
-        WHERE route_id = ?
-          AND service_id = ?
-      `;
-      
-      const sampleParams: any[] = [routeIdStr, serviceId];
-      
-      if (variant && typeof variant === 'string' && variant.trim() !== '' && variant !== 'none') {
-        sampleTripQuery += ` AND route_variant = ?`;
-        sampleParams.push(variant.trim());
-      }
-      
-      sampleTripQuery += ` LIMIT 1`;
-      
-      console.log(`Sample trip query: ${sampleTripQuery.replace(/\s+/g, ' ')}`);
-      const sampleTrip = await db.getAllAsync<any>(sampleTripQuery, sampleParams);
-      
-      if (sampleTrip.length === 0) {
-        console.log('No trip found with service_id, trying fallback');
-        const fallbackTrip = await db.getAllAsync<any>(
-          `SELECT trip_id FROM trips WHERE route_id = ? LIMIT 1`,
-          [routeIdStr]
-        );
-        if (fallbackTrip.length === 0) {
-          console.log('No trip found at all for route');
-          return [];
-        }
-        return await this.getStopsForTrip(fallbackTrip[0].trip_id);
-      }
-      
-      return await this.getStopsForTrip(sampleTrip[0].trip_id);
-    } catch (error) {
-      console.error('Error fetching stops by route:', error);
-      return [];
-    }
+  
+async getStopsByRoute(routeId: string, variant: string, date: Date, directionCode: string): Promise<any[]> {
+  const serviceId = formatDate(date).replace(/-/g, '');
+  let sql = `
+    SELECT DISTINCT s.stop_id, s.stop_name
+    FROM stops s
+    JOIN stop_times st ON s.stop_id = st.stop_id
+    JOIN trips t ON st.trip_id = t.trip_id
+    WHERE t.route_id = ? AND t.service_id = ? AND t.direction_id = ?
+  `;
+  const params = [routeId, serviceId, directionCode];
+  if (variant) {
+    sql += ` AND t.route_variant = ?`;
+    params.push(variant);
   }
+  sql += ` ORDER BY st.stop_sequence`;
+  return this.executeCustomQuery(sql, params);
+}
 
   private async getStopsForTrip(tripId: string): Promise<Stop[]> {
     const db = await this.getDatabase();

@@ -9,11 +9,21 @@ interface RouteMapViewProps {
   routeShortName: string;
   variant?: string;
   selectedDate?: Date;
-  direction?: 'inbound' | 'outbound';
+  direction?: string;          // Changed from 'inbound'|'outbound' to direction code (E,W,N,S)
   visible: boolean;
   onClose: () => void;
   onSelectStop: (stop: any, type: 'departure' | 'arrival') => void;
 }
+
+// Helper: determine if the stop order should be reversed based on direction code
+// Returns true if Union should be at the END (i.e., direction is towards Union)
+const isTowardsUnion = (directionCode: string, routeShortName: string): boolean => {
+  // Default heuristic: W or S = towards Union (inbound), E or N = away from Union (outbound)
+  // Override per route if needed
+  if (directionCode === 'W' || directionCode === 'S') return true;
+  if (directionCode === 'E' || directionCode === 'N') return false;
+  return false; // fallback
+};
 
 const RouteMapView: React.FC<RouteMapViewProps> = ({
   routeId,
@@ -43,19 +53,20 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
       
       const dbService = DatabaseService;
       const date = selectedDate || new Date();
-      const effectiveVariant = variant && variant !== routeShortName ? variant : undefined;
+      const effectiveVariant = variant && variant !== routeShortName ? variant : undefined;      
+      const dirCode = direction || '';
       
       console.log('=== RouteMapView Load ===');
       console.log('Route ID:', routeId);
-      console.log('Direction prop:', direction);
+      console.log('Direction code:', dirCode);
       console.log('Effective Variant:', effectiveVariant);
       
       const [stopsList, shapeData] = await Promise.all([
-        dbService.getStopsByRoute(routeId, effectiveVariant, date),
-        dbService.getShapeForRoute(routeId, date, effectiveVariant)
+        dbService.getStopsByRoute(routeId, effectiveVariant || '', date, dirCode),
+        dbService.getShapeForRoute(routeId, date, effectiveVariant || '')
       ]);
       
-      // Process stops
+      // Process stops with coordinates
       let stopsWithCoords = stopsList.map((stop: any) => {
         if (stop.stop_lat && stop.stop_lon && stop.stop_lat !== 0 && stop.stop_lon !== 0) {
           return {
@@ -74,10 +85,9 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
         }
       });
       
-      // ORIENT stops + shape based on direction
-      // when the user selects the opposite direction.
       let shapeCoords = shapeData && shapeData.length > 0 ? [...shapeData] : [];
       
+      // Orientation logic based on direction code
       if (direction && stopsWithCoords.length > 1) {
         const unionIndex = stopsWithCoords.findIndex((s: any) =>
           s.stop_name && s.stop_name.toLowerCase().includes('union')
@@ -86,14 +96,11 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
         console.log('Union found at index:', unionIndex, 'of', stopsWithCoords.length);
         
         if (unionIndex !== -1) {
-          const isUnionAtStart = unionIndex === 0;
-          const isUnionAtEnd = unionIndex === stopsWithCoords.length - 1;
-          
-          // Inbound  = To Union   → Union must be at END   (red)
-          // Outbound = From Union → Union must be at START (green)
-          const needsReverse = 
-            (direction === 'inbound' && isUnionAtStart) ||
-            (direction === 'outbound' && isUnionAtEnd);
+          const towardsUnion = isTowardsUnion(direction, routeShortName);
+          // If towards Union, Union should be at END; if away, Union should be at START
+          const unionAtEnd = unionIndex === stopsWithCoords.length - 1;
+          const unionAtStart = unionIndex === 0;
+          const needsReverse = (towardsUnion && !unionAtEnd) || (!towardsUnion && !unionAtStart);
           
           if (needsReverse) {
             stopsWithCoords.reverse();
@@ -186,12 +193,23 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
 
   const displayVariant = variant && variant !== routeShortName ? variant : undefined;
 
+  // Generate human-readable direction description
+  const getDirectionDescription = (code?: string): string => {
+    switch (code) {
+      case 'E': return 'Eastbound';
+      case 'W': return 'Westbound';
+      case 'N': return 'Northbound';
+      case 'S': return 'Southbound';
+      default: return '';
+    }
+  };
+  const directionText = direction ? ` • ${getDirectionDescription(direction)}` : '';
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>
-          {routeShortName} {displayVariant ? `(${displayVariant})` : ''}
-          {direction === 'inbound' ? ' → To Union' : direction === 'outbound' ? ' → From Union' : ''}
+          {routeShortName} {displayVariant ? `(${displayVariant})` : ''}{directionText}
         </Text>
         <TouchableOpacity onPress={onClose} style={styles.closeButton}>
           <Text style={styles.closeButtonText}>✕</Text>
