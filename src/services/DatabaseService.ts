@@ -1,6 +1,7 @@
 // src/services/DatabaseService.ts
 import * as SQLite from 'expo-sqlite';
 import { loadDatabase } from '../utils/databaseLoader';
+import { getLineData, getStopsFromLineData } from './scheduleService';
 
 interface Stop {
   stop_id: string;
@@ -164,182 +165,35 @@ class DatabaseService {
     return true;
   }
 
-  // NEW: Method to test stop_routes query
-  async testStopRoutes(): Promise<void> {
-    const db = await this.getDatabase();
-    console.log('--- Testing stop_routes table ---');
-    try {
-      const countResult = await db.getAllAsync<any>('SELECT COUNT(*) as count FROM stop_routes');
-      console.log(`stop_routes row count: ${countResult[0]?.count || 0}`);
-      
-      const sample = await db.getAllAsync<any>('SELECT * FROM stop_routes LIMIT 5');
-      console.log('Sample stop_routes rows:', sample);
-      
-      // Test a nearby stops query with stop_routes
-      const testQuery = `
-        SELECT 
-          s.stop_id, s.stop_name,
-          GROUP_CONCAT(DISTINCT sr.route_short_name) as routes
-        FROM stops s
-        LEFT JOIN stop_routes sr ON s.stop_id = sr.stop_id
-        WHERE s.stop_lat BETWEEN 43.5 AND 43.7
-          AND s.stop_lon BETWEEN -79.5 AND -79.3
-        GROUP BY s.stop_id
-        LIMIT 5
-      `;
-      const testResult = await db.getAllAsync<any>(testQuery);
-      console.log(`Test query returned ${testResult.length} stops with routes`);
-      if (testResult.length > 0) {
-        console.log('First result:', testResult[0]);
-      }
-    } catch (error) {
-      console.error('Error testing stop_routes:', error);
-    }
-  }
-
   
-async getStopsByRoute(routeId: string, variant: string, date: Date, directionCode: string): Promise<any[]> {
-  const serviceId = formatDate(date).replace(/-/g, '');
-  let sql = `
-    SELECT DISTINCT s.stop_id, s.stop_name
-    FROM stops s
-    JOIN stop_times st ON s.stop_id = st.stop_id
-    JOIN trips t ON st.trip_id = t.trip_id
-    WHERE t.route_id = ? AND t.service_id = ? AND t.direction_id = ?
-  `;
-  const params = [routeId, serviceId, directionCode];
-  if (variant) {
-    sql += ` AND t.route_variant = ?`;
-    params.push(variant);
-  }
-  sql += ` ORDER BY st.stop_sequence`;
-  return this.executeCustomQuery(sql, params);
-}
+  async getStopsByRoute(
+    routeId: string,
+    variant: string,
+    date: Date,
+    directionCode: string
+  ): Promise<any[]> {
+    // 1. Fetch stop order from the API (no stop_times needed)
+    const lineData = await getLineData(variant, directionCode, date);
+    if (!lineData) return [];
 
-  private async getStopsForTrip(tripId: string): Promise<Stop[]> {
-    const db = await this.getDatabase();
-    console.log(`getStopsForTrip: tripId = ${tripId}`);
-    
-    // Note: This uses 'trip_stops' table which might not exist. If you are using stop_times, adjust.
-    const stopsQuery = `
-      SELECT 
-        s.stop_id, 
-        s.stop_name,
-        CAST(s.stop_lat AS REAL) as stop_lat,
-        CAST(s.stop_lon AS REAL) as stop_lon,
-        sr.stop_sequence
-      FROM stop_routes sr
-      INNER JOIN stops s ON sr.stop_id = s.stop_id
-      WHERE sr.trip_id = ?
-      ORDER BY sr.stop_sequence ASC
-    `;
-    
-    try {
-      const stops = await db.getAllAsync<any>(stopsQuery, [tripId]);
-      console.log(`Found ${stops.length} stops for trip ${tripId}`);
-      return stops.map(stop => ({
-        stop_id: stop.stop_id,
-        stop_name: stop.stop_name,
-        stop_lat: stop.stop_lat,
-        stop_lon: stop.stop_lon,
-      })) as Stop[];
-    } catch (error) {
-      console.error(`Error in getStopsForTrip for trip ${tripId}:`, error);
-      // If 'trip_stops' doesn't exist, fallback to stop_times
-      console.log('Attempting fallback using stop_times...');
-      const fallbackQuery = `
-        SELECT DISTINCT
-          s.stop_id, 
-          s.stop_name,
-          CAST(s.stop_lat AS REAL) as stop_lat,
-          CAST(s.stop_lon AS REAL) as stop_lon
-        FROM stop_times st
-        JOIN stops s ON st.stop_id = s.stop_id
-        WHERE st.trip_id = ?
-        ORDER BY st.stop_sequence ASC
-      `;
-      const stops = await db.getAllAsync<any>(fallbackQuery, [tripId]);
-      console.log(`Fallback: found ${stops.length} stops via stop_times`);
-      return stops.map(stop => ({
-        stop_id: stop.stop_id,
-        stop_name: stop.stop_name,
-        stop_lat: stop.stop_lat,
-        stop_lon: stop.stop_lon,
-      })) as Stop[];
-    }
-  }
+    const stopsFromApi = getStopsFromLineData(lineData);
+    if (stopsFromApi.length === 0) return [];
 
-  async getStopTimesForTripsBatch(tripIds: string[], stopId: string): Promise<Map<string, any>> {
-    const db = await this.getDatabase();
-    console.log(`getStopTimesForTripsBatch: ${tripIds.length} trips, stopId=${stopId}`);
-    
-    if (tripIds.length === 0) return new Map();
-    
-    const CHUNK_SIZE = 900;
-    const results = new Map<string, any>();
-    
-    for (let i = 0; i < tripIds.length; i += CHUNK_SIZE) {
-      const chunk = tripIds.slice(i, i + CHUNK_SIZE);
-      const placeholders = chunk.map(() => '?').join(',');
-      
-      const query = `
-        SELECT trip_id, stop_id, arrival_time, departure_time, stop_sequence
-        FROM stop_times
-        WHERE trip_id IN (${placeholders})
-          AND stop_id = ?
-      `;
-      
-      console.log(`Executing chunk ${i/CHUNK_SIZE + 1}: ${chunk.length} trips`);
-      const rows = await db.getAllAsync<any>(query, [...chunk, stopId]);
-      
-      for (const row of rows) {
-        results.set(row.trip_id, row);
-      }
-    }
-    
-    console.log(`Found ${results.size} trips with stop times for stop ${stopId}`);
-    return results;
-  }
+    // 2. Get stop names from the local stops table (only stop_id → stop_name)
+    const stopIds = stopsFromApi.map(s => s.stop_id);
+    const placeholders = stopIds.map(() => '?').join(',');
+    const sql = `SELECT stop_id, stop_name FROM stops WHERE stop_id IN (${placeholders})`;
+    const rows = await this.executeCustomQuery<{ stop_id: string; stop_name: string }>(sql, stopIds);
 
-  async getStopTimesForTripsBatchTwoStops(
-    tripIds: string[], 
-    departureStopId: string, 
-    arrivalStopId: string
-  ): Promise<Map<string, { departure: any; arrival: any }>> {
-    const db = await this.getDatabase();
-    console.log(`getStopTimesForTripsBatchTwoStops: ${tripIds.length} trips, departure=${departureStopId}, arrival=${arrivalStopId}`);
-    
-    if (tripIds.length === 0) return new Map();
-    
-    const CHUNK_SIZE = 900;
-    const results = new Map<string, { departure: any; arrival: any }>();
-    
-    for (let i = 0; i < tripIds.length; i += CHUNK_SIZE) {
-      const chunk = tripIds.slice(i, i + CHUNK_SIZE);
-      const placeholders = chunk.map(() => '?').join(',');
-      
-      const query = `
-        SELECT trip_id, stop_id, arrival_time, departure_time, stop_sequence
-        FROM stop_times
-        WHERE trip_id IN (${placeholders})
-          AND stop_id IN (?, ?)
-        ORDER BY trip_id, stop_sequence
-      `;
-      
-      const rows = await db.getAllAsync<any>(query, [...chunk, departureStopId, arrivalStopId]);
-      
-      for (const row of rows) {
-        const existing = results.get(row.trip_id) || { departure: null, arrival: null };
-        if (row.stop_id === departureStopId) {
-          existing.departure = row;
-        } else if (row.stop_id === arrivalStopId) {
-          existing.arrival = row;
-        }
-        results.set(row.trip_id, existing);
-      }
-    }
-    
-    return results;
+    // 3. Build a map for quick name lookup
+    const nameMap = new Map(rows.map(row => [row.stop_id, row.stop_name]));
+
+    // 4. Return stops in the API‑preserved order, with names (fallback to stop_id)
+    return stopsFromApi.map(s => ({
+      stop_id: s.stop_id,
+      stop_name: nameMap.get(s.stop_id) || s.stop_id,
+      stop_sequence: s.stop_sequence,
+    }));
   }
 
   async getShapeForRoute(routeId: string | number, date?: Date, variant?: string): Promise<Array<{latitude: number, longitude: number}>> {
@@ -441,35 +295,6 @@ async getStopsByRoute(routeId: string, variant: string, date: Date, directionCod
     }));
   }
 
-  async getStopTimesForTrip(tripId: string): Promise<any[]> {
-    const db = await this.getDatabase();
-    console.log(`getStopTimesForTrip: tripId=${tripId}`);
-    
-    const query = `
-      SELECT stop_id, arrival_time, departure_time, stop_sequence
-      FROM stop_times
-      WHERE trip_id = ?
-      ORDER BY stop_sequence ASC
-    `;
-    
-    const results = await db.getAllAsync<any>(query, [tripId]);
-    console.log(`Found ${results.length} stop times for trip ${tripId}`);
-    return results;
-  }
-
-  async getStopTime(tripId: string, stopId: string): Promise<any> {
-    const db = await this.getDatabase();
-    
-    const query = `
-      SELECT stop_id, arrival_time, departure_time, stop_sequence
-      FROM stop_times
-      WHERE trip_id = ? AND stop_id = ?
-      LIMIT 1
-    `;
-    
-    const results = await db.getAllAsync<any>(query, [tripId, stopId]);
-    return results.length > 0 ? results[0] : null;
-  }
 
   async checkConnection(): Promise<boolean> {
     try {
@@ -495,6 +320,8 @@ async getStopsByRoute(routeId: string, variant: string, date: Date, directionCod
       }
     }
   }
+
+  
 }
 
 export default DatabaseService.getInstance();

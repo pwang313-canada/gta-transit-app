@@ -18,7 +18,13 @@ import NearbyStationsMap from '../components/NearbyStationsMap';
 import RouteMapView from '../components/RouteMapView';
 import SearchablePicker from '../components/SearchableRoutePicker';
 import DatabaseService from '../services/DatabaseService';
-import { getTripsForStop, TripWithArrival } from '../services/scheduleService';
+import {
+  getAvailableDirections,
+  getLineData,
+  getStopsFromLineData,
+  getTripsForStop,
+  TripWithArrival,
+} from '../services/scheduleService';
 
 // ========== Type Definitions ==========
 interface Route {
@@ -103,6 +109,8 @@ export default function HomeScreen() {
   const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
   const [favorites, setFavorites] = useState<Favorite[]>([]);
 
+  // Cache for stops (stop_id -> stop_name, later lat/lon)
+  const stopsMapRef = useRef<Map<string, { name: string; lat?: number; lon?: number }>>(new Map());
   const flatListRef = useRef<FlatList>(null);
   const dbService = DatabaseService;
 
@@ -177,6 +185,32 @@ export default function HomeScreen() {
     await handleDirectionSelectByCode(fav.directionCode, routeGroup, fav.departureStop, fav.arrivalStop);
   };
 
+  // ========== Load stops cache from database ==========
+  const loadStopsCache = async () => {
+    try {
+      const rows = await dbService.executeCustomQuery<{ stop_id: string; stop_name: string; stop_lat?: number; stop_lon?: number }>(
+        `SELECT stop_id, stop_name, stop_lat, stop_lon FROM stops`
+      );
+      for (const row of rows) {
+        stopsMapRef.current.set(row.stop_id, {
+          name: row.stop_name,
+          lat: row.stop_lat,
+          lon: row.stop_lon,
+        });
+      }
+      console.log(`📦 Loaded ${stopsMapRef.current.size} stops into cache`);
+    } catch (error) {
+      console.error('Failed to load stops cache:', error);
+      // Continue without names (fallback to stop_id)
+    }
+  };
+
+  // Helper to get stop name from cache
+  const getStopName = (stopId: string): string => {
+    const cached = stopsMapRef.current.get(stopId);
+    return cached?.name || stopId;
+  };
+
   // ========== Core Functions ==========
   const handleRouteGroupSelect = (routeGroup: RouteGroup): void => {
     setSelectedRouteGroup(routeGroup);
@@ -194,27 +228,19 @@ export default function HomeScreen() {
 
   const loadAvailableDirections = async (routeGroup: RouteGroup) => {
     try {
-      const serviceId = formatDate(selectedDate).replace(/-/g, '');
-      const query = `
-        SELECT DISTINCT t.direction_id
-        FROM trips t
-        WHERE t.route_variant = ? AND t.service_id = ?
-        ORDER BY t.direction_id
-      `;
-      const rows = await dbService.executeCustomQuery<{ direction_id: string }>(query, [routeGroup.variant, serviceId]);
-      const uniqueCodes = [...new Set(rows.map(row => row.direction_id))];
-      const directions = uniqueCodes.map(code => ({
+      const directions = await getAvailableDirections(routeGroup.variant, selectedDate);
+      const directionsWithNames = directions.map(code => ({
         code,
         name: getDirectionDisplayName(code)
       }));
-      setAvailableDirections(directions);
-      if (directions.length > 0) {
-        setSelectedDirectionCode(directions[0].code);
-      } else {
-        setSelectedDirectionCode(null);
+      setAvailableDirections(directionsWithNames);
+      // Do NOT auto-select any direction – both buttons remain grey
+      setSelectedDirectionCode(null);
+      if (directionsWithNames.length === 0) {
+        Alert.alert('No Service', `No ${routeGroup.routeNumber} service on ${formatDate(selectedDate)}`);
       }
     } catch (error) {
-      console.error('Failed to load directions:', error);
+      console.error('Failed to load directions from API:', error);
       setAvailableDirections([]);
       setSelectedDirectionCode(null);
     }
@@ -239,107 +265,68 @@ export default function HomeScreen() {
     setArrivalStop(null);
 
     try {
-      const serviceId = formatDate(selectedDate).replace(/-/g, '');
-      const variant = effectiveRouteGroup.variant;
-
-      const routeQuery = `
-        SELECT r.route_id, r.route_short_name, r.route_long_name
-        FROM trips t
-        JOIN routes r ON t.route_id = r.route_id
-        WHERE t.route_variant = ? AND t.direction_id = ? AND t.service_id = ?
-        LIMIT 1
-      `;
-      const routeRows = await dbService.executeCustomQuery<any>(routeQuery, [variant, directionCode, serviceId]);
-      if (routeRows.length === 0) {
-        Alert.alert('No Service', `No ${directionCode} service for ${effectiveRouteGroup.routeNumber} on ${selectedDate.toDateString()}`);
+      // Fetch line data from API
+      const lineData = await getLineData(effectiveRouteGroup.variant, directionCode, selectedDate);
+      if (!lineData || !lineData.Trip || lineData.Trip.length === 0) {
+        Alert.alert('No Schedule', `No trips found for ${effectiveRouteGroup.routeNumber} ${directionCode} on ${formatDate(selectedDate)}`);
         setSelectedDirectionCode(null);
         return;
       }
 
-      let selectedRouteData = routeRows[0];
-      if (!dbService.isRouteValidForDate(selectedRouteData.route_id, selectedDate)) {
-        let fallbackRoute = null;
-        for (const row of routeRows) {
-          if (dbService.isRouteValidForDate(row.route_id, selectedDate)) {
-            fallbackRoute = row;
-            break;
-          }
-        }
-        if (fallbackRoute) {
-          selectedRouteData = fallbackRoute;
-        } else {
-          Alert.alert('No Valid Route', `No valid route found for ${effectiveRouteGroup.routeNumber} on ${formatDate(selectedDate)}`);
-          return;
-        }
-      }
-
+      // Build route object (synthetic ID)
       const selectedRouteObj: Route = {
-        route_id: selectedRouteData.route_id,
-        route_short_name: selectedRouteData.route_short_name,
-        route_long_name: selectedRouteData.route_long_name,
+        route_id: `${effectiveRouteGroup.variant}_${directionCode}`,
+        route_short_name: effectiveRouteGroup.routeNumber,
+        route_long_name: effectiveRouteGroup.routeLongName,
         direction_id: directionCode,
         variant: effectiveRouteGroup.variant,
-        isBus: effectiveRouteGroup.isBus
+        isBus: effectiveRouteGroup.isBus,
       };
       setSelectedRoute(selectedRouteObj);
 
-      // Fetch stops from database
-      const stopsList = await dbService.getStopsByRoute(
-        selectedRouteData.route_id,
-        effectiveRouteGroup.variant,
-        selectedDate,
-        directionCode
-      );
-
-      // Map stops and assign stop_sequence (if missing, use index)
-      let typedStops: Stop[] = stopsList.map((stop: any, idx: number) => ({
-        stop_id: stop.stop_id,
-        stop_name: stop.stop_name,
-        stop_sequence: stop.stop_sequence !== undefined ? Number(stop.stop_sequence) : idx,
+      // Extract stops from line data
+      const stopsList = getStopsFromLineData(lineData);
+      // Convert to Stop objects with real names from cache
+      const typedStops: Stop[] = stopsList.map(s => ({
+        stop_id: s.stop_id,
+        stop_name: getStopName(s.stop_id),
+        stop_sequence: s.stop_sequence,
       }));
 
-      console.log(`[DEBUG] Stops before sorting:`, typedStops.map(s => `${s.stop_name} (seq=${s.stop_sequence})`));
-
-      // Sort by stop_sequence ascending
-      typedStops.sort((a, b) => (a.stop_sequence ?? 0) - (b.stop_sequence ?? 0));
-
-      // Heuristic: if first stop name contains "Union" and last does not, reverse the list
-      const firstStopName = typedStops[0]?.stop_name.toLowerCase() || '';
-      const lastStopName = typedStops[typedStops.length - 1]?.stop_name.toLowerCase() || '';
-      if (firstStopName.includes('union') && !lastStopName.includes('union')) {
-        console.log('[DEBUG] Detected possible reversed stop order – reversing list.');
-        typedStops.reverse();
-      }
-
       setStops(typedStops);
-      console.log(`[DEBUG] Final stops order:`, typedStops.map(s => s.stop_name));
 
       // Stop selection logic
       if (preselectedDepartureStop && preselectedArrivalStop) {
-        setDepartureStop(preselectedDepartureStop);
-        setArrivalStop(preselectedArrivalStop);
+        const depStop = { ...preselectedDepartureStop, stop_name: getStopName(preselectedDepartureStop.stop_id) };
+        const arrStop = { ...preselectedArrivalStop, stop_name: getStopName(preselectedArrivalStop.stop_id) };
+        setDepartureStop(depStop);
+        setArrivalStop(arrStop);
       } else if (preselectedDepartureStop) {
-        setDepartureStop(preselectedDepartureStop);
+        const depStop = { ...preselectedDepartureStop, stop_name: getStopName(preselectedDepartureStop.stop_id) };
+        setDepartureStop(depStop);
         setArrivalStop(null);
       } else {
-        // Use the first and last stops of the (potentially reversed) array.
-        // Do NOT resort – the array order is now correct.
         const firstStop = typedStops[0];
         const lastStop = typedStops[typedStops.length - 1];
         setDepartureStop(firstStop);
         setArrivalStop(lastStop);
       }
     } catch (error) {
-      console.error('Failed to load stops:', error);
+      console.error('Failed to load stops from API:', error);
       Alert.alert('Error', 'Failed to load stops. Please try again.');
     }
   };
 
   const handleMapStopSelect = (stop: any, type: 'departure' | 'arrival') => {
+    if (!stop) return;
+    const resolvedStop = {
+      stop_id: stop.stop_id,
+      stop_name: getStopName(stop.stop_id),
+    };
     if (type === 'departure') {
-      setDepartureStop(stop ? { stop_id: stop.stop_id, stop_name: stop.stop_name } : null);
+      setDepartureStop(resolvedStop);
     } else {
-      setArrivalStop(stop ? { stop_id: stop.stop_id, stop_name: stop.stop_name } : null);
+      setArrivalStop(resolvedStop);
     }
   };
 
@@ -357,7 +344,7 @@ export default function HomeScreen() {
       return;
     }
     setSelectedRouteGroup(routeGroup);
-    const selectedStop = route.stopId ? { stop_id: route.stopId, stop_name: route.stopName || '' } : undefined;
+    const selectedStop = route.stopId ? { stop_id: route.stopId, stop_name: route.stopName || getStopName(route.stopId) } : undefined;
     handleDirectionSelectByCode(route.direction!, routeGroup, selectedStop);
   };
 
@@ -404,12 +391,21 @@ export default function HomeScreen() {
         return;
       }
 
-      const currentSeconds = queryDate.getHours() * 3600 + queryDate.getMinutes() * 60 + queryDate.getSeconds();
-      const futureTrips = isToday ? trips.filter(t => t.departure_time >= currentSeconds) : trips;
+      let futureTrips = trips;
+      if (isToday) {
+        const now = new Date();
+        const currentSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+        futureTrips = trips.filter(t => {
+          let departure = t.departure_time;
+          if (departure < currentSeconds && departure < 4 * 3600) {
+            departure += 86400;
+          }
+          return departure >= currentSeconds;
+        });
+      }
 
       setSchedule(futureTrips);
       setNextSchedule(futureTrips.length > 0 ? futureTrips[0] : null);
-      console.log(`✅ Loaded ${futureTrips.length} schedule items from API`);
     } catch (error) {
       console.error('Failed to load schedule via API:', error);
       Alert.alert('Error', 'Could not fetch schedule from API. Please try again.');
@@ -483,13 +479,14 @@ export default function HomeScreen() {
     }
   };
 
-  // Initialization
+  // Initialization: load database, routes, and stops cache
   useEffect(() => {
     const init = async () => {
       try {
         const ok = await dbService.initializeDatabase();
         await new Promise(res => setTimeout(res, 100));
         if (!ok) throw new Error('Database failed to initialize');
+        await loadStopsCache();      // Load stops map (name + lat/lon)
         await loadRoutesWithDirections();
       } catch (e) {
         console.error('INIT FAILED:', e);
@@ -560,7 +557,7 @@ export default function HomeScreen() {
                   <TouchableOpacity style={styles.favoriteContent} onPress={() => loadFavorite(fav)}>
                     <Text style={styles.favoriteRoute}>{fav.routeShortName}</Text>
                     <Text style={styles.favoriteStops} numberOfLines={1}>
-                      {getDirectionDisplayName(fav.directionCode)}: {fav.departureStop.stop_name} → {fav.arrivalStop.stop_name}
+                      {getDirectionDisplayName(fav.directionCode)}: {getStopName(fav.departureStop.stop_id)} → {getStopName(fav.arrivalStop.stop_id)}
                     </Text>
                   </TouchableOpacity>
                   <TouchableOpacity style={styles.deleteFavorite} onPress={() => deleteFavorite(fav.id)}>
@@ -763,21 +760,31 @@ export default function HomeScreen() {
             {schedule.map((item, idx) => (
               <View key={idx} style={styles.scheduleItem}>
                 <View style={styles.timeContainer}>
-                  <Text style={styles.scheduleTime}>{secondsToTimeString(item.departure_time)}</Text>
-                  {item.arrival_time && (
-                    <>
-                      <Text style={styles.arrowSymbol}>→</Text>
-                      <Text style={styles.arrivalTime}>{secondsToTimeString(item.arrival_time)}</Text>
-                    </>
+                  <Text style={styles.scheduleTime}>
+                    {secondsToTimeString(item.departure_time) || '--:--'}
+                  </Text>
+                  {item.arrival_time != null && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <Text style={styles.arrowSymbol}> → </Text>
+                      <Text style={styles.arrivalTime}>
+                        {secondsToTimeString(item.arrival_time) || '--:--'}
+                      </Text>
+                    </View>
                   )}
-                  {isToday && !item.arrival_time && (
-                    <Text style={styles.waitTime}>{calculateWaitTime(item.departure_time)}</Text>
+                  {isToday && item.arrival_time == null && (
+                    <Text style={styles.waitTime}>
+                      {calculateWaitTime(item.departure_time)}
+                    </Text>
                   )}
                 </View>
-                {item.arrival_time && item.travel_time_minutes && (
-                  <Text style={styles.travelTimeSmall}>{item.travel_time_minutes} min</Text>
+                {item.arrival_time != null && item.travel_time_minutes != null && (
+                  <Text style={styles.travelTimeSmall}>
+                    {item.travel_time_minutes} min
+                  </Text>
                 )}
-                <Text style={styles.scheduleDestination}>{item.destination || 'Final Stop'}</Text>
+                <Text style={styles.scheduleDestination}>
+                  {typeof item.destination === 'string' ? item.destination : 'Final Stop'}
+                </Text>
               </View>
             ))}
           </View>
