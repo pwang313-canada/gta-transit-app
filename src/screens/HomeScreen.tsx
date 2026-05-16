@@ -8,11 +8,10 @@ import {
   FlatList,
   Platform,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import NearbyStationsMap from '../components/NearbyStationsMap';
 import RouteMapView from '../components/RouteMapView';
@@ -366,11 +365,11 @@ export default function HomeScreen() {
     }
   };
 
-  const loadRecentSchedule = async (): Promise<void> => {
+  const loadRecentSchedule = async (forceDate?: Date): Promise<void> => {
     if (!selectedRoute || !departureStop || !selectedDirectionCode) return;
     setLoadingSchedule(true);
     try {
-      const queryDate = selectedDate;
+      const queryDate = forceDate || selectedDate;
       const isToday = queryDate.toDateString() === new Date().toDateString();
       const variant = selectedRoute.variant || selectedRoute.route_short_name;
       const directionCode = selectedDirectionCode;
@@ -417,7 +416,7 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    if (selectedRoute && departureStop) await loadRecentSchedule();
+    if (selectedRoute && departureStop) await loadRecentSchedule(selectedDate);
     setRefreshing(false);
   };
 
@@ -497,9 +496,11 @@ export default function HomeScreen() {
     init();
   }, []);
 
-  // Reload schedule when dependencies change
+  // Reload schedule when dependencies change – pass current date explicitly
   useEffect(() => {
-    if (selectedRoute && departureStop && selectedDirectionCode) loadRecentSchedule();
+    if (selectedRoute && departureStop && selectedDirectionCode) {
+      loadRecentSchedule(selectedDate);
+    }
   }, [selectedRoute, departureStop, arrivalStop, selectedDate, selectedDirectionCode]);
 
   // ========== UI Helpers ==========
@@ -552,7 +553,7 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
           {favorites.length > 0 ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.favoritesScroll}>
+            <View style={styles.favoritesGrid}>
               {favorites.map(fav => (
                 <View key={fav.id} style={styles.favoriteCard}>
                   <TouchableOpacity style={styles.favoriteContent} onPress={() => loadFavorite(fav)}>
@@ -566,7 +567,7 @@ export default function HomeScreen() {
                   </TouchableOpacity>
                 </View>
               ))}
-            </ScrollView>
+            </View>
           ) : (
             <Text style={styles.emptyFavoritesText}>No favorites saved yet. Save one below.</Text>
           )}
@@ -628,7 +629,6 @@ export default function HomeScreen() {
     }
 
     if (selectedRoute && selectedDirectionCode) {
-      // Ensure variant is defined; fallback to route_short_name
       const variantForMap = selectedRoute.variant || selectedRoute.route_short_name;
       console.log(`[RouteMapView] Route: ${selectedRoute.route_short_name}, variant: ${variantForMap}, direction: ${selectedDirectionCode}, stops: ${stops.length}`);
       sections.push({
@@ -846,13 +846,18 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 24, fontWeight: 'bold', color: '#fff' },
   favoritesSection: { marginHorizontal: 15, marginTop: 10, marginBottom: 5 },
-  favoritesScroll: { flexDirection: 'row', marginTop: 8 },
+  favoritesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
   favoriteCard: {
     backgroundColor: '#f0f8ff',
     borderRadius: 12,
     padding: 10,
-    marginRight: 12,
-    minWidth: 160,
+    width: '48%',
+    marginBottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
     shadowColor: '#000',
