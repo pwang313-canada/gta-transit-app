@@ -283,6 +283,7 @@ export default function HomeScreen() {
         isBus: effectiveRouteGroup.isBus,
       };
       setSelectedRoute(selectedRouteObj);
+      console.log(`[DEBUG] selectedRoute set: variant=${selectedRouteObj.variant}, route_short_name=${selectedRouteObj.route_short_name}, direction=${directionCode}`);
 
       // Extract stops from line data
       const stopsList = getStopsFromLineData(lineData);
@@ -627,6 +628,9 @@ export default function HomeScreen() {
     }
 
     if (selectedRoute && selectedDirectionCode) {
+      // Ensure variant is defined; fallback to route_short_name
+      const variantForMap = selectedRoute.variant || selectedRoute.route_short_name;
+      console.log(`[RouteMapView] Route: ${selectedRoute.route_short_name}, variant: ${variantForMap}, direction: ${selectedDirectionCode}, stops: ${stops.length}`);
       sections.push({
         key: 'mapControls',
         component: (
@@ -638,7 +642,7 @@ export default function HomeScreen() {
               <RouteMapView
                 routeId={selectedRoute.route_id}
                 routeShortName={selectedRoute.route_short_name}
-                variant={selectedRoute.variant}
+                variant={variantForMap}
                 selectedDate={selectedDate}
                 direction={selectedDirectionCode}
                 visible={showMap}
