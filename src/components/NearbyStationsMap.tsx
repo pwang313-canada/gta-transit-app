@@ -364,7 +364,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
 
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#00A1E0" />
+            <ActivityIndicator size="large" color="#335B00" />
             <Text style={styles.loadingText}>Finding nearby stations...</Text>
           </View>
         ) : (
@@ -390,7 +390,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
                   }}
                   title={station.stop_name}
                   description={`${station.routes.size} route(s) • ${station.distance?.toFixed(1)}km`}
-                  pinColor={station.stop_name.toLowerCase().includes('union') ? '#FF6B6B' : '#00A1E0'}
+                  pinColor={station.stop_name.toLowerCase().includes('union') ? '#FF6B6B' : '#335B00'}
                   onPress={() => handleStationPress(station)}
                 />
               ))}
@@ -431,7 +431,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
                 </View>
 
                 {loadingRoutes ? (
-                  <ActivityIndicator size="small" color="#00A1E0" />
+                  <ActivityIndicator size="small" color="#335B00" />
                 ) : (
                   <>
                     <Text style={styles.routesLabel}>Available Routes:</Text>
@@ -532,7 +532,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 16,
-    backgroundColor: '#00A1E0',
+    backgroundColor: '#335B00',
     paddingTop: 48,
   },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
@@ -580,7 +580,7 @@ const styles = StyleSheet.create({
   infoTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', flex: 1 },
   infoDistance: {
     fontSize: 14,
-    color: '#00A1E0',
+    color: '#335B00',
     fontWeight: '600',
     marginRight: 12,
   },
@@ -594,7 +594,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   routeHeader: { marginBottom: 8 },
-  routeNumber: { fontSize: 16, fontWeight: 'bold', color: '#00A1E0' },
+  routeNumber: { fontSize: 16, fontWeight: 'bold', color: '#335B00' },
   routeName: { fontSize: 12, color: '#666', marginTop: 2 },
   directionButtons: { flexDirection: 'row', gap: 8 },
   directionButton: { flex: 1, paddingVertical: 8, borderRadius: 6, alignItems: 'center' },
@@ -619,7 +619,7 @@ const styles = StyleSheet.create({
   previewTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', textAlign: 'center' },
   previewDirection: { fontSize: 14, color: '#666', textAlign: 'center', marginTop: 4, marginBottom: 12 },
   previewButtons: { flexDirection: 'row', gap: 8 },
-  confirmButton: { flex: 1, backgroundColor: '#00A1E0', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  confirmButton: { flex: 1, backgroundColor: '#335B00', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   confirmButtonText: { color: '#fff', fontWeight: 'bold' },
   cancelPreviewButton: { flex: 1, backgroundColor: '#f0f0f0', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   cancelPreviewText: { color: '#666' },

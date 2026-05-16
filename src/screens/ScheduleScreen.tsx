@@ -128,7 +128,7 @@ export default function ScheduleScreen() {
   if (loading && !scheduleData) {
     return (
       <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#00A1E0" />
+        <ActivityIndicator size="large" color="#335B00" />
         <Text style={styles.loadingText}>Loading schedule...</Text>
       </View>
     );
@@ -244,7 +244,7 @@ const styles = StyleSheet.create({
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
   loadingText: { marginTop: 12, fontSize: 16, color: '#666' },
   errorText: { color: 'red', fontSize: 16, textAlign: 'center', marginBottom: 16 },
-  retryButton: { backgroundColor: '#00A1E0', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
+  retryButton: { backgroundColor: '#335B00', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
   retryButtonText: { color: '#fff', fontWeight: 'bold' },
   header: {
     flexDirection: 'row',
@@ -256,26 +256,26 @@ const styles = StyleSheet.create({
     borderBottomColor: '#e0e0e0',
   },
   dateButton: { backgroundColor: '#f0f0f0', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
-  dateButtonText: { fontSize: 14, color: '#00A1E0', fontWeight: '600' },
-  refreshButton: { backgroundColor: '#00A1E0', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
+  dateButtonText: { fontSize: 14, color: '#335B00', fontWeight: '600' },
+  refreshButton: { backgroundColor: '#335B00', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
   refreshButtonText: { color: '#fff', fontWeight: '600' },
   content: { flex: 1, flexDirection: 'row' },
   linesContainer: { width: '35%', backgroundColor: '#fff', borderRightWidth: 1, borderRightColor: '#e0e0e0', padding: 8 },
   sectionTitle: { fontSize: 16, fontWeight: 'bold', marginBottom: 12, color: '#333', paddingHorizontal: 8 },
   lineItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   lineItemActive: { backgroundColor: '#e6f7ff' },
-  lineCode: { fontSize: 16, fontWeight: 'bold', width: 50, color: '#00A1E0' },
+  lineCode: { fontSize: 16, fontWeight: 'bold', width: 50, color: '#335B00' },
   lineCodeActive: { color: '#0077b3' },
   lineName: { flex: 1, fontSize: 14, color: '#333', marginLeft: 8 },
   lineType: { fontSize: 16, marginLeft: 8 },
   detailsContainer: { flex: 1, padding: 16 },
   variantsScroll: { flexDirection: 'row', marginBottom: 16 },
   variantChip: { backgroundColor: '#f0f0f0', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, marginRight: 10 },
-  variantChipActive: { backgroundColor: '#00A1E0' },
+  variantChipActive: { backgroundColor: '#335B00' },
   variantText: { fontSize: 14, color: '#333' },
   variantTextActive: { color: '#fff' },
   tripItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  tripTime: { fontSize: 16, fontWeight: 'bold', color: '#00A1E0' },
+  tripTime: { fontSize: 16, fontWeight: 'bold', color: '#335B00' },
   tripDestination: { fontSize: 14, color: '#555', flex: 1, textAlign: 'right', marginLeft: 16 },
   selectPrompt: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   promptText: { fontSize: 16, color: '#888', textAlign: 'center' },

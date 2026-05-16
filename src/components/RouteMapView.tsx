@@ -333,7 +333,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 12,
-    backgroundColor: '#00A1E0',
+    backgroundColor: '#335B00',
   },
   title: {
     color: '#fff',

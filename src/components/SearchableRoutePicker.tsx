@@ -161,7 +161,7 @@ const SearchablePicker: React.FC<SearchablePickerProps> = ({
                 >
                   <Text style={styles.itemText}>{item.label}</Text>
                   {value === item.value && (
-                    <Ionicons name="checkmark-circle" size={20} color="#00A1E0" />
+                    <Ionicons name="checkmark-circle" size={20} color="#335B00" />
                   )}
                 </TouchableOpacity>
               ))

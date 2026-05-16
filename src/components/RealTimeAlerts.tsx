@@ -129,7 +129,7 @@ const RealTimeAlerts: React.FC<RealTimeAlertsProps> = ({ apiKey, pollingInterval
 
   const backgroundColor = flashAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: ['#00A1E0', '#FF6B6B'],
+    outputRange: ['#335B00', '#FF6B6B'],
   });
 
   const formatDate = (dateStr?: string) => {
@@ -154,7 +154,7 @@ const RealTimeAlerts: React.FC<RealTimeAlertsProps> = ({ apiKey, pollingInterval
       {expanded && (
         <View style={styles.dropdown}>
           {loading ? (
-            <ActivityIndicator size="small" color="#00A1E0" style={styles.loader} />
+            <ActivityIndicator size="small" color="#335B00" style={styles.loader} />
           ) : alerts.length === 0 ? (
             <Text style={styles.emptyText}>No active service alerts at this time.</Text>
           ) : (
@@ -194,7 +194,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#00A1E0',
+    backgroundColor: '#335B00',
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 25,
@@ -266,7 +266,7 @@ const styles = StyleSheet.create({
   },
   alertStatus: {
     fontSize: 11,
-    color: '#00A1E0',
+    color: '#335B00',
     marginTop: 6,
     fontWeight: '600',
   },

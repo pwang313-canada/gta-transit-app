@@ -557,7 +557,7 @@ export default function HomeScreen() {
                 <View key={fav.id} style={styles.favoriteCard}>
                   <TouchableOpacity style={styles.favoriteContent} onPress={() => loadFavorite(fav)}>
                     <Text style={styles.favoriteRoute}>{fav.routeShortName}</Text>
-                    <Text style={styles.favoriteStops} numberOfLines={1}>
+                    <Text style={styles.favoriteStops} numberOfLines={2}>
                       {getDirectionDisplayName(fav.directionCode)}: {getStopName(fav.departureStop.stop_id)} → {getStopName(fav.arrivalStop.stop_id)}
                     </Text>
                   </TouchableOpacity>
@@ -712,7 +712,7 @@ export default function HomeScreen() {
         key: 'loading',
         component: (
           <View style={styles.loaderContainer}>
-            <ActivityIndicator size="large" color="#00A1E0" />
+            <ActivityIndicator size="large" color="#335B00" />
             <Text style={styles.loadingText}>Loading schedule...</Text>
           </View>
         ),
@@ -724,20 +724,19 @@ export default function HomeScreen() {
         key: 'nextSchedule',
         component: (
           <View style={styles.nextScheduleCard}>
-            {nextSchedule.arrival_time ? (
+            {departureStop && arrivalStop ? (
               <>
                 <View style={styles.nextScheduleTimeContainer}>
                   <View style={styles.nextTimeColumn}>
                     <Text style={styles.nextTimeLabel}>Depart</Text>
-                    <Text style={styles.nextScheduleTime}>{secondsToTimeString(nextSchedule.departure_time)}</Text>
+                    <Text style={styles.nextScheduleTime}>{departureStop.stop_name}</Text>
                   </View>
                   <Text style={styles.nextArrowSymbol}>→</Text>
                   <View style={styles.nextTimeColumn}>
                     <Text style={styles.nextTimeLabel}>Arrive</Text>
-                    <Text style={styles.nextScheduleTime}>{secondsToTimeString(nextSchedule.arrival_time)}</Text>
+                    <Text style={styles.nextScheduleTime}>{arrivalStop.stop_name}</Text>
                   </View>
                 </View>
-                <Text style={styles.travelTimeInfo}>{nextSchedule.travel_time_minutes} min</Text>
               </>
             ) : (
               <>
@@ -750,7 +749,6 @@ export default function HomeScreen() {
                 )}
               </>
             )}
-            <Text style={styles.nextScheduleDestination}>→ {nextSchedule.destination || 'Final Stop'}</Text>
           </View>
         ),
       });
@@ -781,13 +779,13 @@ export default function HomeScreen() {
                     </Text>
                   )}
                 </View>
-                {item.arrival_time != null && item.travel_time_minutes != null && (
-                  <Text style={styles.travelTimeSmall}>
-                    {item.travel_time_minutes} min
-                  </Text>
-                )}
-                <Text style={styles.scheduleDestination}>
-                  {typeof item.destination === 'string' ? item.destination : 'Final Stop'}
+
+                <Text style={styles.travelTimeSmall}>
+                  {item.arrival_time != null && item.travel_time_minutes != null && (
+                    <Text style={styles.travelTimeSmall}>
+                      {item.travel_time_minutes} min
+                    </Text>
+                  )}                
                 </Text>
               </View>
             ))}
@@ -802,7 +800,7 @@ export default function HomeScreen() {
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#00A1E0" />
+        <ActivityIndicator size="large" color="#335B00" />
         <Text style={styles.loadingText}>Loading routes...</Text>
       </View>
     );
@@ -841,7 +839,7 @@ const styles = StyleSheet.create({
   loadingText: { marginTop: 20, fontSize: 16, color: '#666' },
   loaderContainer: { marginTop: 20, alignItems: 'center', padding: 20 },
   header: {
-    backgroundColor: '#00A1E0',
+    backgroundColor: '#335B00',
     padding: 20,
     alignItems: 'center',
     justifyContent: 'center',
@@ -864,12 +862,12 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   favoriteContent: { flex: 1 },
-  favoriteRoute: { fontSize: 16, fontWeight: 'bold', color: '#00A1E0' },
+  favoriteRoute: { fontSize: 16, fontWeight: 'bold', color: '#335B00' },
   favoriteStops: { fontSize: 12, color: '#555', marginTop: 4 },
   deleteFavorite: { marginLeft: 8, padding: 4 },
   deleteFavoriteText: { fontSize: 16, color: '#ff4444', fontWeight: 'bold' },
   nearbyButton: {
-    backgroundColor: '#00A1E0',
+    backgroundColor: '#335B00',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
@@ -889,7 +887,7 @@ const styles = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
   dateButton: { backgroundColor: '#f0f0f0', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
-  dateButtonText: { fontSize: 14, color: '#00A1E0', fontWeight: '600' },
+  dateButtonText: { fontSize: 14, color: '#335B00', fontWeight: '600' },
   directionButtonsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 5 },
   directionButton: {
     paddingVertical: 8,
@@ -900,8 +898,8 @@ const styles = StyleSheet.create({
     borderColor: '#ddd',
   },
   directionButtonActive: {
-    backgroundColor: '#00A1E0',
-    borderColor: '#00A1E0',
+    backgroundColor: '#335B00',
+    borderColor: '#335B00',
   },
   directionButtonText: {
     fontSize: 14,
@@ -913,30 +911,29 @@ const styles = StyleSheet.create({
   },
   mapToggleContainer: { marginHorizontal: 15, marginBottom: 10 },
   mapToggleButton: { backgroundColor: '#f0f0f0', paddingVertical: 10, borderRadius: 25, alignItems: 'center', borderWidth: 1, borderColor: '#ddd' },
-  mapToggleButtonActive: { backgroundColor: '#00A1E0', borderColor: '#00A1E0' },
+  mapToggleButtonActive: { backgroundColor: '#335B00', borderColor: '#335B00' },
   mapToggleText: { fontSize: 14, fontWeight: '600', color: '#666' },
   mapToggleTextActive: { color: '#fff' },
   saveFavoriteContainer: { marginHorizontal: 15, marginBottom: 10 },
   saveFavoriteButton: { backgroundColor: '#FFC107', paddingVertical: 12, borderRadius: 25, alignItems: 'center' },
   saveFavoriteText: { fontSize: 16, fontWeight: 'bold', color: '#333' },
-  nextScheduleCard: { backgroundColor: '#00A1E0', margin: 15, padding: 20, borderRadius: 15, alignItems: 'center', elevation: 4 },
-  nextScheduleTime: { color: '#fff', fontSize: 36, fontWeight: 'bold' },
+  nextScheduleCard: { backgroundColor: '#335B00', margin: 15, padding: 20, borderRadius: 15, alignItems: 'center', elevation: 4 },
+  nextScheduleTime: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
   nextScheduleTimeContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20, marginVertical: 10 },
   nextTimeColumn: { alignItems: 'center' },
   nextTimeLabel: { color: '#fff', fontSize: 12, opacity: 0.8, marginBottom: 5 },
-  nextArrowSymbol: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
+  nextArrowSymbol: { color: '#fff', fontSize: 20, fontWeight: 'bold', alignSelf: 'center' },
   nextScheduleWait: { color: '#fff', fontSize: 16, marginTop: 8, opacity: 0.9 },
   nextScheduleDestination: { color: '#fff', fontSize: 14, marginTop: 8, opacity: 0.8 },
   travelTimeInfo: { color: '#fff', fontSize: 14, marginTop: 8, opacity: 0.9 },
-  refreshButton: { marginTop: 12, backgroundColor: '#fff', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#00A1E0' },
-  refreshButtonText: { color: '#00A1E0', fontWeight: '600' },
+  refreshButton: { marginTop: 12, backgroundColor: '#fff', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#335B00' },
+  refreshButtonText: { color: '#335B00', fontWeight: '600' },
   scheduleSection: { backgroundColor: '#fff', margin: 15, padding: 15, borderRadius: 10 },
   scheduleItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   timeContainer: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
-  scheduleTime: { fontSize: 16, fontWeight: 'bold', color: '#00A1E0' },
+  scheduleTime: { fontSize: 16, fontWeight: 'bold', color: '#335B00' },
   arrowSymbol: { fontSize: 14, color: '#666' },
   arrivalTime: { fontSize: 16, fontWeight: '600', color: '#2E7D32' },
   waitTime: { fontSize: 12, color: '#666' },
-  travelTimeSmall: { fontSize: 12, color: '#555', marginHorizontal: 8 },
-  scheduleDestination: { fontSize: 14, color: '#333', textAlign: 'right', flex: 1, marginLeft: 12 },
+  travelTimeSmall: { fontSize: 14, color: '#333', textAlign: 'right', flex: 1, marginLeft: 12 },
 });
