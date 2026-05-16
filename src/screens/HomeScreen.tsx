@@ -28,7 +28,6 @@ import {
 // ========== Type Definitions ==========
 interface Route {
   route_id: string;
-  route_short_name: string;
   route_long_name: string;
   direction_id?: string;
   variant?: string;
@@ -42,7 +41,7 @@ interface Stop {
 }
 
 interface RouteGroup {
-  routeNumber: string;
+  routeId: string;
   routeLongName: string;
   isBus: boolean;
   variant: string;
@@ -50,7 +49,7 @@ interface RouteGroup {
 
 interface Favorite {
   id: string;
-  routeShortName: string;
+  routeId: string;
   variant: string;
   isBus: boolean;
   directionCode: string;
@@ -113,6 +112,12 @@ export default function HomeScreen() {
   const flatListRef = useRef<FlatList>(null);
   const dbService = DatabaseService;
 
+  // Ref to always hold the latest selected date (solves stale closure issues)
+  const selectedDateRef = useRef(selectedDate);
+  useEffect(() => {
+    selectedDateRef.current = selectedDate;
+  }, [selectedDate]);
+
   // ========== Favorites Persistence ==========
   useEffect(() => {
     loadFavorites();
@@ -151,7 +156,7 @@ export default function HomeScreen() {
     }
     const newFavorite: Favorite = {
       id: Date.now().toString(),
-      routeShortName: selectedRouteGroup.routeNumber,
+      routeId: selectedRouteGroup.routeId,
       variant: selectedRouteGroup.variant,
       isBus: selectedRouteGroup.isBus,
       directionCode: selectedDirectionCode,
@@ -171,10 +176,10 @@ export default function HomeScreen() {
 
   const loadFavorite = async (fav: Favorite) => {
     const routeGroup = routeGroups.find(
-      rg => rg.routeNumber === fav.routeShortName && rg.variant === fav.variant
+      rg => rg.routeId === fav.routeId && rg.variant === fav.variant
     );
     if (!routeGroup) {
-      Alert.alert('Route Not Found', `Route ${fav.routeShortName} (${fav.variant}) is not available.`);
+      Alert.alert('Route Not Found', `Route ${fav.routeId} (${fav.variant}) is not available.`);
       return;
     }
     setSelectedRouteGroup(routeGroup);
@@ -227,16 +232,16 @@ export default function HomeScreen() {
 
   const loadAvailableDirections = async (routeGroup: RouteGroup) => {
     try {
+      // Use the current date from ref (or state) – but we can use selectedDate directly here as it's in an async function that will capture the latest
       const directions = await getAvailableDirections(routeGroup.variant, selectedDate);
       const directionsWithNames = directions.map(code => ({
         code,
         name: getDirectionDisplayName(code)
       }));
       setAvailableDirections(directionsWithNames);
-      // Do NOT auto-select any direction – both buttons remain grey
       setSelectedDirectionCode(null);
       if (directionsWithNames.length === 0) {
-        Alert.alert('No Service', `No ${routeGroup.routeNumber} service on ${formatDate(selectedDate)}`);
+        Alert.alert('No Service', `No ${routeGroup.routeId} service on ${formatDate(selectedDate)}`);
       }
     } catch (error) {
       console.error('Failed to load directions from API:', error);
@@ -264,29 +269,24 @@ export default function HomeScreen() {
     setArrivalStop(null);
 
     try {
-      // Fetch line data from API
       const lineData = await getLineData(effectiveRouteGroup.variant, directionCode, selectedDate);
       if (!lineData || !lineData.Trip || lineData.Trip.length === 0) {
-        Alert.alert('No Schedule', `No trips found for ${effectiveRouteGroup.routeNumber} ${directionCode} on ${formatDate(selectedDate)}`);
+        Alert.alert('No Schedule', `No trips found for ${effectiveRouteGroup.routeId} ${directionCode} on ${formatDate(selectedDate)}`);
         setSelectedDirectionCode(null);
         return;
       }
 
-      // Build route object (synthetic ID)
       const selectedRouteObj: Route = {
-        route_id: `${effectiveRouteGroup.variant}_${directionCode}`,
-        route_short_name: effectiveRouteGroup.routeNumber,
+        route_id: effectiveRouteGroup.routeId,
         route_long_name: effectiveRouteGroup.routeLongName,
         direction_id: directionCode,
         variant: effectiveRouteGroup.variant,
         isBus: effectiveRouteGroup.isBus,
       };
       setSelectedRoute(selectedRouteObj);
-      console.log(`[DEBUG] selectedRoute set: variant=${selectedRouteObj.variant}, route_short_name=${selectedRouteObj.route_short_name}, direction=${directionCode}`);
+      console.log(`[DEBUG] selectedRoute set: variant=${selectedRouteObj.variant}, route_short_name=${selectedRouteObj.route_id}, direction=${directionCode}`);
 
-      // Extract stops from line data
       const stopsList = getStopsFromLineData(lineData);
-      // Convert to Stop objects with real names from cache
       const typedStops: Stop[] = stopsList.map(s => ({
         stop_id: s.stop_id,
         stop_name: getStopName(s.stop_id),
@@ -295,7 +295,6 @@ export default function HomeScreen() {
 
       setStops(typedStops);
 
-      // Stop selection logic
       if (preselectedDepartureStop && preselectedArrivalStop) {
         const depStop = { ...preselectedDepartureStop, stop_name: getStopName(preselectedDepartureStop.stop_id) };
         const arrStop = { ...preselectedArrivalStop, stop_name: getStopName(preselectedArrivalStop.stop_id) };
@@ -332,15 +331,14 @@ export default function HomeScreen() {
 
   const handleNearbyRouteSelect = (route: {
     routeId: string;
-    routeShortName: string;
     variant?: string;
     direction?: string;
     stopId?: string;
     stopName?: string;
   }) => {
-    const routeGroup = routeGroups.find(rg => rg.routeNumber === route.routeShortName);
+    const routeGroup = routeGroups.find(rg => rg.routeId === route.routeId);
     if (!routeGroup) {
-      Alert.alert('Route Not Found', `Could not find route ${route.routeShortName}`);
+      Alert.alert('Route Not Found', `Could not find route ${route.routeId}`);
       return;
     }
     setSelectedRouteGroup(routeGroup);
@@ -365,17 +363,20 @@ export default function HomeScreen() {
     }
   };
 
-  const loadRecentSchedule = async (forceDate?: Date): Promise<void> => {
+  const loadRecentSchedule = async (): Promise<void> => {
     if (!selectedRoute || !departureStop || !selectedDirectionCode) return;
     setLoadingSchedule(true);
     try {
-      const queryDate = forceDate || selectedDate;
+      // Use the ref to get the latest date, avoiding stale closures
+      const queryDate = selectedDateRef.current;
       const isToday = queryDate.toDateString() === new Date().toDateString();
-      const variant = selectedRoute.variant || selectedRoute.route_short_name;
+      const variant = selectedRoute.variant || selectedRoute.route_id;
       const directionCode = selectedDirectionCode;
 
+      console.log(`[loadRecentSchedule] Using date: ${formatDate(queryDate)}`);
+
       const trips = await getTripsForStop(
-        selectedRoute.route_short_name,
+        selectedRoute.route_id,
         variant,
         directionCode,
         departureStop.stop_id,
@@ -416,7 +417,7 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    if (selectedRoute && departureStop) await loadRecentSchedule(selectedDate);
+    if (selectedRoute && departureStop) await loadRecentSchedule();
     setRefreshing(false);
   };
 
@@ -440,7 +441,7 @@ export default function HomeScreen() {
         if (!groupsMap.has(variant)) {
           const isTrain = isTrainRoute(row.route_short_name);
           groupsMap.set(variant, {
-            routeNumber: variant,
+            routeId: variant,
             routeLongName: row.route_long_name,
             isBus: !isTrain,
             variant: variant
@@ -452,8 +453,8 @@ export default function HomeScreen() {
       groupedRoutes.sort((a, b) => {
         if (a.isBus !== b.isBus) return a.isBus ? -1 : 1;
         if (a.isBus) {
-          const aMatch = a.routeNumber.match(/(\d+)([A-Z]*)/);
-          const bMatch = b.routeNumber.match(/(\d+)([A-Z]*)/);
+          const aMatch = a.routeId.match(/(\d+)([A-Z]*)/);
+          const bMatch = b.routeId.match(/(\d+)([A-Z]*)/);
           if (aMatch && bMatch) {
             const aNum = parseInt(aMatch[1]);
             const bNum = parseInt(bMatch[1]);
@@ -464,9 +465,9 @@ export default function HomeScreen() {
             if (aLetter !== '' && bLetter === '') return 1;
             return aLetter.localeCompare(bLetter);
           }
-          return a.routeNumber.localeCompare(b.routeNumber);
+          return a.routeId.localeCompare(b.routeId);
         } else {
-          return a.routeNumber.localeCompare(b.routeNumber);
+          return a.routeId.localeCompare(b.routeId);
         }
       });
 
@@ -479,14 +480,14 @@ export default function HomeScreen() {
     }
   };
 
-  // Initialization: load database, routes, and stops cache
+  // Initialization
   useEffect(() => {
     const init = async () => {
       try {
         const ok = await dbService.initializeDatabase();
         await new Promise(res => setTimeout(res, 100));
         if (!ok) throw new Error('Database failed to initialize');
-        await loadStopsCache();      // Load stops map (name + lat/lon)
+        await loadStopsCache();
         await loadRoutesWithDirections();
       } catch (e) {
         console.error('INIT FAILED:', e);
@@ -496,20 +497,20 @@ export default function HomeScreen() {
     init();
   }, []);
 
-  // Reload schedule when dependencies change – pass current date explicitly
+  // Reload schedule when dependencies change – uses ref for latest date
   useEffect(() => {
     if (selectedRoute && departureStop && selectedDirectionCode) {
-      loadRecentSchedule(selectedDate);
+      loadRecentSchedule();
     }
   }, [selectedRoute, departureStop, arrivalStop, selectedDate, selectedDirectionCode]);
 
   // ========== UI Helpers ==========
   const getFormattedRouteLabel = (routeGroup: RouteGroup): string => {
     const routeType = routeGroup.isBus ? '🚌 Bus' : '🚆 Train';
-    return `${routeGroup.routeNumber} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
+    return `${routeGroup.routeId} - ${routeGroup.routeLongName.substring(0, 40)} (${routeType})`;
   };
 
-  const routeItems = routeGroups.map(rg => ({ label: getFormattedRouteLabel(rg), value: rg.routeNumber }));
+  const routeItems = routeGroups.map(rg => ({ label: getFormattedRouteLabel(rg), value: rg.routeId }));
   const stopItems = stops.map(s => ({ label: s.stop_name, value: s.stop_id }));
 
   const calculateWaitTime = (departureTime: number): string => {
@@ -557,7 +558,7 @@ export default function HomeScreen() {
               {favorites.map(fav => (
                 <View key={fav.id} style={styles.favoriteCard}>
                   <TouchableOpacity style={styles.favoriteContent} onPress={() => loadFavorite(fav)}>
-                    <Text style={styles.favoriteRoute}>{fav.routeShortName}</Text>
+                    <Text style={styles.favoriteRoute}>{fav.routeId}</Text>
                     <Text style={styles.favoriteStops} numberOfLines={2}>
                       {getDirectionDisplayName(fav.directionCode)}: {getStopName(fav.departureStop.stop_id)} → {getStopName(fav.arrivalStop.stop_id)}
                     </Text>
@@ -589,10 +590,10 @@ export default function HomeScreen() {
             items={routeItems}
             placeholder="Search GO line..."
             onValueChange={(value: string) => {
-              const selected = routeGroups.find(rg => rg.routeNumber === value);
+              const selected = routeGroups.find(rg => rg.routeId === value);
               if (selected) handleRouteGroupSelect(selected);
             }}
-            value={selectedRouteGroup?.routeNumber}
+            value={selectedRouteGroup?.routeId}
           />
         </View>
       ),
@@ -629,8 +630,7 @@ export default function HomeScreen() {
     }
 
     if (selectedRoute && selectedDirectionCode) {
-      const variantForMap = selectedRoute.variant || selectedRoute.route_short_name;
-      console.log(`[RouteMapView] Route: ${selectedRoute.route_short_name}, variant: ${variantForMap}, direction: ${selectedDirectionCode}, stops: ${stops.length}`);
+      const variantForMap = selectedRoute.variant || selectedRoute.route_id;
       sections.push({
         key: 'mapControls',
         component: (
@@ -641,7 +641,7 @@ export default function HomeScreen() {
             {showMap && (
               <RouteMapView
                 routeId={selectedRoute.route_id}
-                routeShortName={selectedRoute.route_short_name}
+                routeShortName={selectedRoute.route_id}
                 variant={variantForMap}
                 selectedDate={selectedDate}
                 direction={selectedDirectionCode}
@@ -688,7 +688,7 @@ export default function HomeScreen() {
 
     if (selectedRouteGroup && selectedDirectionCode && departureStop && arrivalStop && favorites.length < 4) {
       const alreadySaved = favorites.some(
-        fav => fav.routeShortName === selectedRouteGroup.routeNumber &&
+        fav => fav.routeId === selectedRouteGroup.routeId &&
                fav.directionCode === selectedDirectionCode &&
                fav.departureStop.stop_id === departureStop.stop_id &&
                fav.arrivalStop.stop_id === arrivalStop.stop_id
@@ -737,6 +737,9 @@ export default function HomeScreen() {
                     <Text style={styles.nextScheduleTime}>{arrivalStop.stop_name}</Text>
                   </View>
                 </View>
+                {nextSchedule.travel_time_minutes && (
+                  <Text style={styles.travelTimeInfo}>{nextSchedule.travel_time_minutes} min travel time</Text>
+                )}
               </>
             ) : (
               <>
@@ -779,14 +782,11 @@ export default function HomeScreen() {
                     </Text>
                   )}
                 </View>
-
-                <Text style={styles.travelTimeSmall}>
-                  {item.arrival_time != null && item.travel_time_minutes != null && (
-                    <Text style={styles.travelTimeSmall}>
-                      {item.travel_time_minutes} min
-                    </Text>
-                  )}                
-                </Text>
+                {item.arrival_time != null && item.travel_time_minutes != null && (
+                  <Text style={styles.travelTimeSmall}>
+                    {item.travel_time_minutes} min
+                  </Text>
+                )}
               </View>
             ))}
           </View>
@@ -923,9 +923,9 @@ const styles = StyleSheet.create({
   saveFavoriteButton: { backgroundColor: '#FFC107', paddingVertical: 12, borderRadius: 25, alignItems: 'center' },
   saveFavoriteText: { fontSize: 16, fontWeight: 'bold', color: '#333' },
   nextScheduleCard: { backgroundColor: '#335B00', margin: 15, padding: 20, borderRadius: 15, alignItems: 'center', elevation: 4 },
-  nextScheduleTime: { color: '#fff', fontSize: 15, fontWeight: 'bold' },
+  nextScheduleTime: { color: '#fff', fontSize: 15, fontWeight: 'bold', textAlign: 'center' },
   nextScheduleTimeContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20, marginVertical: 10 },
-  nextTimeColumn: { alignItems: 'center' },
+  nextTimeColumn: { alignItems: 'center', flex: 1 },
   nextTimeLabel: { color: '#fff', fontSize: 12, opacity: 0.8, marginBottom: 5 },
   nextArrowSymbol: { color: '#fff', fontSize: 20, fontWeight: 'bold', alignSelf: 'center' },
   nextScheduleWait: { color: '#fff', fontSize: 16, marginTop: 8, opacity: 0.9 },
@@ -935,7 +935,7 @@ const styles = StyleSheet.create({
   refreshButtonText: { color: '#335B00', fontWeight: '600' },
   scheduleSection: { backgroundColor: '#fff', margin: 15, padding: 15, borderRadius: 10 },
   scheduleItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  timeContainer: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
+  timeContainer: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 2 },
   scheduleTime: { fontSize: 16, fontWeight: 'bold', color: '#335B00' },
   arrowSymbol: { fontSize: 14, color: '#666' },
   arrivalTime: { fontSize: 16, fontWeight: '600', color: '#2E7D32' },

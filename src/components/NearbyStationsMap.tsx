@@ -19,7 +19,6 @@ interface NearbyStationsMapProps {
   onClose: () => void;
   onSelectRoute: (route: {
     routeId: string;
-    routeShortName: string;
     variant?: string;
     direction?: 'inbound' | 'outbound';
     stopId?: string;      // new
@@ -187,7 +186,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
           s.stop_name,
           CAST(s.stop_lat AS REAL) as stop_lat,
           CAST(s.stop_lon AS REAL) as stop_lon,
-          GROUP_CONCAT(DISTINCT sr.route_id || '|' || sr.route_short_name || '|' || COALESCE(sr.route_variant, '')) as route_data
+          GROUP_CONCAT(DISTINCT sr.route_id || '|' || sr.route_id || '|' || COALESCE(sr.route_variant, '')) as route_data
         FROM stops s
         LEFT JOIN stop_routes sr ON s.stop_id = sr.stop_id
         WHERE s.stop_lat BETWEEN ? AND ?
@@ -259,7 +258,6 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
       const details = station.routeDetails.get(routeShortName);
       return {
         route_id: details?.routeId || '',
-        route_short_name: routeShortName,
         route_long_name: '',
         route_variant: details?.variant,
       };
@@ -272,21 +270,22 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
   const enrichRoutesWithNames = async (station: Station) => {
     if (station.routes.size === 0) return;
     
-    const routeShortNames = Array.from(station.routes).map(name => `'${name}'`).join(',');
+    const routeIds = Array.from(station.routes).map(name => `'${name}'`).join(',');
+    console.log(`Fetching long names for routes: ${routeIds}`);
     
     const query = `
-      SELECT DISTINCT r.route_short_name, r.route_long_name
+      SELECT DISTINCT r.route_id, r.route_long_name
       FROM routes r
-      WHERE r.route_short_name IN (${routeShortNames})
+      WHERE r.route_id IN (${routeIds})
     `;
     
     try {
       const names = await dbService.executeCustomQuery<any>(query);
-      const nameMap = new Map(names.map(n => [n.route_short_name, n.route_long_name]));
+      const nameMap = new Map(names.map(n => [n.route_id, n.route_long_name]));
       
       setRoutesForStation(prev => prev.map(r => ({
         ...r,
-        route_long_name: nameMap.get(r.route_short_name) || r.route_long_name,
+        route_id: nameMap.get(r.route_id) || r.route_long_name,
       })));
     } catch (e) {
       console.error('Error fetching route names:', e);
@@ -334,7 +333,6 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
     if (selectedRouteOnMap) {
       onSelectRoute({
         routeId: selectedRouteOnMap.route_id,
-        routeShortName: selectedRouteOnMap.route_short_name,
         variant: selectedRouteOnMap.route_variant,
         direction: selectedRouteOnMap.direction,
         stopId: selectedStation?.stop_id,      // pass the station
@@ -439,8 +437,8 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
                       <View key={idx} style={styles.routeItem}>
                         <View style={styles.routeHeader}>
                           <Text style={styles.routeNumber}>
-                            Route {route.route_short_name}
-                            {route.route_variant && route.route_variant !== route.route_short_name &&
+                            Route {route.route_id}
+                            {route.route_variant && route.route_variant !== route.route_id &&
                               ` (${route.route_variant})`}
                           </Text>
                           {route.route_long_name ? (
@@ -474,8 +472,8 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
             {selectedRouteOnMap && (
               <View style={styles.previewPanel}>
                 <Text style={styles.previewTitle}>
-                  Route {selectedRouteOnMap.route_short_name}
-                  {selectedRouteOnMap.route_variant !== selectedRouteOnMap.route_short_name &&
+                  Route {selectedRouteOnMap.route_id}
+                  {selectedRouteOnMap.route_variant !== selectedRouteOnMap.route_id &&
                     ` (${selectedRouteOnMap.route_variant})`}
                 </Text>
                 <Text style={styles.previewDirection}>

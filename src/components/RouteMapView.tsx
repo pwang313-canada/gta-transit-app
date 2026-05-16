@@ -18,7 +18,6 @@ interface RouteMapViewProps {
 
 const RouteMapView: React.FC<RouteMapViewProps> = ({
   routeId,
-  routeShortName,
   variant,
   selectedDate,
   direction,
@@ -34,7 +33,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
 
   const dbService = DatabaseService;
 
-  console.log(`[RouteMapView] Received: variant=${variant}, direction=${direction}, routeShortName=${routeShortName}`);
+  console.log(`[RouteMapView] Received: variant=${variant}, direction=${direction}, routeShortName=${routeId}`);
 
   const fetchStopNames = async (stopIds: string[]): Promise<Map<string, string>> => {
     if (stopIds.length === 0) return new Map();
@@ -250,7 +249,7 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>
-          {routeShortName} {variant && variant !== routeShortName ? `(${variant})` : ''}{directionText}
+          {routeId} {variant && variant !== routeId ? `(${variant})` : ''}{directionText}
         </Text>
         <TouchableOpacity onPress={onClose} style={styles.closeButton}>
           <Text style={styles.closeButtonText}>✕</Text>
