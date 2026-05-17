@@ -8,6 +8,8 @@ import {
   FlatList,
   Platform,
   RefreshControl,
+  Modal as RNModal,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -58,6 +60,15 @@ interface Favorite {
   routeLongName: string;
 }
 
+interface ServiceAlert {
+  Code: string;
+  PostedDateTime: string;
+  SubjectEnglish: string;
+  BodyEnglish: string;
+  Category?: string;
+  SubCategory?: string;
+}
+
 const STORAGE_KEY = 'go_transit_favorites_v2';
 
 // ========== Helper Functions ==========
@@ -106,6 +117,13 @@ export default function HomeScreen() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [showDatePicker, setShowDatePicker] = useState<boolean>(false);
   const [favorites, setFavorites] = useState<Favorite[]>([]);
+
+  // Service alert state
+  const [alerts, setAlerts] = useState<ServiceAlert[]>([]);
+  const [unreadAlertIds, setUnreadAlertIds] = useState<Set<string>>(new Set());
+  const [showAlertModal, setShowAlertModal] = useState(false);
+  const [selectedAlert, setSelectedAlert] = useState<ServiceAlert | null>(null);
+  const intervalRef = useRef<number | null>(null);
 
   // Cache for stops (stop_id -> stop_name, later lat/lon)
   const stopsMapRef = useRef<Map<string, { name: string; lat?: number; lon?: number }>>(new Map());
@@ -490,6 +508,90 @@ export default function HomeScreen() {
     }
   };
 
+  // ========== Service Alert Functions ==========
+const fetchAlerts = async () => {
+  try {
+    // For production, use today's date: new Date().toISOString().split('T')[0]
+    // For testing with the provided example, use "2026-01-01"
+    const targetDate = new Date().toISOString().split('T')[0]; // Change to "2026-05-16" or today as needed
+    const urls = [
+      'https://transit-backend-production-34b5.up.railway.app/api/serviceUpdate/serviceAlert',
+      'https://transit-backend-production-34b5.up.railway.app/api/serviceUpdate/informationAlert'
+    ];
+    const allAlerts: ServiceAlert[] = [];
+
+    for (const url of urls) {
+      const response = await fetch(url);
+      const data = await response.json();
+      // Handle the actual response structure
+      let messages: any[] = [];
+      if (data && data.Messages && Array.isArray(data.Messages.Message)) {
+        messages = data.Messages.Message;
+      } else if (Array.isArray(data)) {
+        messages = data;
+      } else if (data && Array.isArray(data.Messages)) {
+        messages = data.Messages;
+      }
+      // Map to our ServiceAlert format
+      for (const msg of messages) {
+        allAlerts.push({
+          Code: msg.Code,
+          PostedDateTime: msg.PostedDateTime,
+          SubjectEnglish: msg.SubjectEnglish,
+          BodyEnglish: msg.BodyEnglish,
+          Category: msg.Category,
+          SubCategory: msg.SubCategory,
+        });
+      }
+    }
+
+    // Filter alerts where PostedDateTime starts with targetDate
+    const filtered = allAlerts.filter(alert =>
+      alert.PostedDateTime && alert.PostedDateTime.startsWith(targetDate)
+    );
+
+    console.log(`[Alerts] Found ${filtered.length} alerts for ${targetDate}`);
+
+    // Detect new alerts (those not already in unread set and not already in alerts list)
+    const newAlertIds = filtered
+      .map(a => a.Code)
+      .filter(code => !unreadAlertIds.has(code) && !alerts.some(a => a.Code === code));
+
+    if (newAlertIds.length > 0) {
+      setUnreadAlertIds(prev => {
+        const updated = new Set(prev);
+        newAlertIds.forEach(id => updated.add(id));
+        return updated;
+      });
+    }
+
+    setAlerts(filtered);
+  } catch (error) {
+    console.error('Error fetching service alerts:', error);
+  }
+};
+
+  // Initial alert fetch and interval (every 30 seconds)
+  useEffect(() => {
+    fetchAlerts();
+    intervalRef.current = setInterval(fetchAlerts, 30000);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
+  const markAlertAsRead = (code: string) => {
+    setUnreadAlertIds(prev => {
+      const updated = new Set(prev);
+      updated.delete(code);
+      return updated;
+    });
+  };
+
+  const markAllAsRead = () => {
+    setUnreadAlertIds(new Set());
+  };
+
   // Initialization
   useEffect(() => {
     const init = async () => {
@@ -839,6 +941,81 @@ export default function HomeScreen() {
         onClose={() => setShowNearbyMap(false)}
         onSelectRoute={handleNearbyRouteSelect}
       />
+
+      {/* Floating Alert Button */}
+      {alerts.length > 0 && (
+        <TouchableOpacity
+          style={styles.floatingAlertButton}
+          onPress={() => setShowAlertModal(true)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.bellIcon}>🔔</Text>
+          {unreadAlertIds.size > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{unreadAlertIds.size}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      )}
+
+      {/* Alert Modal */}
+      <RNModal
+        visible={showAlertModal}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setShowAlertModal(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Service Alerts</Text>
+            <TouchableOpacity onPress={() => setShowAlertModal(false)} style={styles.modalCloseButton}>
+              <Text style={styles.modalCloseText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          {selectedAlert ? (
+            <View style={styles.alertDetailContainer}>
+              <TouchableOpacity onPress={() => setSelectedAlert(null)} style={styles.backButton}>
+                <Text style={styles.backButtonText}>← Back to list</Text>
+              </TouchableOpacity>
+              <Text style={styles.alertDetailTitle}>{selectedAlert.SubjectEnglish}</Text>
+              <ScrollView style={styles.alertDetailBody}>
+                <Text style={styles.alertDetailText}>{selectedAlert.BodyEnglish}</Text>
+              </ScrollView>
+            </View>
+          ) : (
+            <ScrollView style={styles.alertList}>
+              {alerts.length === 0 ? (
+                <Text style={styles.noAlertsText}>No alerts for today.</Text>
+              ) : (
+                alerts.map(alert => {
+                  const isUnread = unreadAlertIds.has(alert.Code);
+                  return (
+                    <TouchableOpacity
+                      key={alert.Code}
+                      style={[styles.alertItem, isUnread && styles.unreadAlertItem]}
+                      onPress={() => {
+                        markAlertAsRead(alert.Code);
+                        setSelectedAlert(alert);
+                      }}
+                    >
+                      <View style={styles.alertItemContent}>
+                        <Text style={styles.alertSubject}>{alert.SubjectEnglish}</Text>
+                        {isUnread && <View style={styles.unreadDot} />}
+                      </View>
+                      <Text style={styles.alertCategory}>{alert.Category}</Text>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+              {alerts.length > 0 && (
+                <TouchableOpacity onPress={markAllAsRead} style={styles.markReadButton}>
+                  <Text style={styles.markReadButtonText}>Mark all as read</Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
+          )}
+        </View>
+      </RNModal>
     </>
   );
 }
@@ -951,4 +1128,88 @@ const styles = StyleSheet.create({
   arrivalTime: { fontSize: 16, fontWeight: '600', color: '#2E7D32' },
   waitTime: { fontSize: 12, color: '#666' },
   travelTimeSmall: { fontSize: 14, color: '#333', textAlign: 'right', flex: 1, marginLeft: 12 },
+  // ========== Alert Styles ==========
+  floatingAlertButton: {
+    position: 'absolute',
+    bottom: 20,
+    right: 20,
+    backgroundColor: '#335B00',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+  },
+  bellIcon: { fontSize: 28, color: '#fff' },
+  badge: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: '#ff4444',
+    borderRadius: 12,
+    minWidth: 22,
+    height: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 5,
+  },
+  badgeText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  modalContainer: { flex: 1, backgroundColor: '#f5f5f5' },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 16,
+    backgroundColor: '#335B00',
+    paddingTop: Platform.OS === 'ios' ? 50 : 16,
+  },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', color: '#fff' },
+  modalCloseButton: { padding: 8 },
+  modalCloseText: { fontSize: 20, color: '#fff', fontWeight: 'bold' },
+  alertList: { flex: 1, padding: 16 },
+  alertItem: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    padding: 16,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  unreadAlertItem: {
+    backgroundColor: '#fff9e6',
+    borderLeftWidth: 4,
+    borderLeftColor: '#FFC107',
+  },
+  alertItemContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  alertSubject: { fontSize: 16, fontWeight: '600', color: '#333', flex: 1 },
+  unreadDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#FFC107', marginLeft: 8 },
+  alertCategory: { fontSize: 12, color: '#888', marginTop: 8 },
+  noAlertsText: { textAlign: 'center', marginTop: 40, fontSize: 16, color: '#666' },
+  markReadButton: {
+    backgroundColor: '#f0f0f0',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 16,
+    marginBottom: 30,
+  },
+  markReadButtonText: { color: '#335B00', fontWeight: '600' },
+  alertDetailContainer: { flex: 1, padding: 16 },
+  backButton: { marginBottom: 16 },
+  backButtonText: { color: '#335B00', fontSize: 16, fontWeight: '600' },
+  alertDetailTitle: { fontSize: 20, fontWeight: 'bold', color: '#333', marginBottom: 16 },
+  alertDetailBody: { flex: 1 },
+  alertDetailText: { fontSize: 15, lineHeight: 22, color: '#444' },
 });
