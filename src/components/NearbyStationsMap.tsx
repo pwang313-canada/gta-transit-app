@@ -243,7 +243,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
       const topStations = nearbyStations.slice(0, MAX_STATIONS);
 
       setStations(topStations);
-      console.log(`Loaded ${topStations.length} stations within ${MAX_DISTANCE_KM}km`);
+      // console.log(`Loaded ${topStations.length} stations within ${MAX_DISTANCE_KM}km`);
 
     } catch (error) {
       console.error('Error loading stations in region:', error);
@@ -405,13 +405,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
             </MapView>
 
             {/* Station counter badge */}
-            {!selectedStation && !selectedRouteOnMap && stations.length > 0 && (
-              <View style={styles.stationCounter}>
-                <Text style={styles.stationCounterText}>
-                  {stations.length} station{stations.length !== 1 ? 's' : ''} within {MAX_DISTANCE_KM}km
-                </Text>
-              </View>
-            )}
+
 
             {selectedStation && !selectedRouteOnMap && (
               <View style={styles.infoPanel}>
@@ -531,7 +525,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 16,
     backgroundColor: '#335B00',
-    paddingTop: 48,
+    paddingTop: 16,
   },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   closeButton: { padding: 8 },

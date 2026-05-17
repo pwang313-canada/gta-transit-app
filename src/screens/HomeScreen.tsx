@@ -227,13 +227,15 @@ export default function HomeScreen() {
     setNextSchedule(null);
     setShowMap(false);
     setStops([]);
-    loadAvailableDirections(routeGroup);
+    // Reload directions immediately using current selectedDate
+    loadAvailableDirectionsForRoute(routeGroup, selectedDate);
   };
 
-  const loadAvailableDirections = async (routeGroup: RouteGroup) => {
+  // Accepts an explicit date to avoid stale closure
+  const loadAvailableDirectionsForRoute = async (routeGroup: RouteGroup, date: Date) => {
     try {
-      // Use the current date from ref (or state) – but we can use selectedDate directly here as it's in an async function that will capture the latest
-      const directions = await getAvailableDirections(routeGroup.variant, selectedDate);
+      console.log(`[loadAvailableDirections] variant=${routeGroup.variant}, date=${formatDate(date)}`);
+      const directions = await getAvailableDirections(routeGroup.variant, date);
       const directionsWithNames = directions.map(code => ({
         code,
         name: getDirectionDisplayName(code)
@@ -241,7 +243,7 @@ export default function HomeScreen() {
       setAvailableDirections(directionsWithNames);
       setSelectedDirectionCode(null);
       if (directionsWithNames.length === 0) {
-        Alert.alert('No Service', `No ${routeGroup.routeId} service on ${formatDate(selectedDate)}`);
+        Alert.alert('No Service', `No ${routeGroup.routeId} service on ${formatDate(date)}`);
       }
     } catch (error) {
       console.error('Failed to load directions from API:', error);
@@ -249,6 +251,13 @@ export default function HomeScreen() {
       setSelectedDirectionCode(null);
     }
   };
+
+  // When date changes, reload directions for the current route group (if any)
+  useEffect(() => {
+    if (selectedRouteGroup) {
+      loadAvailableDirectionsForRoute(selectedRouteGroup, selectedDate);
+    }
+  }, [selectedDate, selectedRouteGroup]);
 
   const handleDirectionSelectByCode = async (
     directionCode: string,
@@ -269,7 +278,7 @@ export default function HomeScreen() {
     setArrivalStop(null);
 
     try {
-      console.log(`++++++[DEBUG] Loading line data for variant=${effectiveRouteGroup.variant}, direction=${directionCode}, date=${formatDate(selectedDate)}`);
+      console.log(`[DEBUG] Loading line data for variant=${effectiveRouteGroup.variant}, direction=${directionCode}, date=${formatDate(selectedDate)}`);
       const lineData = await getLineData(effectiveRouteGroup.variant, directionCode, selectedDate);
       if (!lineData || !lineData.Trip || lineData.Trip.length === 0) {
         Alert.alert('No Schedule', `No trips found for ${effectiveRouteGroup.routeId} ${directionCode} on ${formatDate(selectedDate)}`);
@@ -351,6 +360,7 @@ export default function HomeScreen() {
     if (Platform.OS === 'android') setShowDatePicker(false);
     if (selectedDate) {
       setSelectedDate(selectedDate);
+      // Clear all dependent selections
       setSelectedDirectionCode(null);
       setSelectedRoute(null);
       setDepartureStop(null);
@@ -358,9 +368,8 @@ export default function HomeScreen() {
       setSchedule([]);
       setNextSchedule(null);
       setStops([]);
-      if (selectedRouteGroup) {
-        loadAvailableDirections(selectedRouteGroup);
-      }
+      setShowMap(false);
+      // Directions will be reloaded automatically by the useEffect that watches selectedDate/selectedRouteGroup
     }
   };
 
