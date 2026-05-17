@@ -11,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import MapView, { Marker, Polyline } from 'react-native-maps';
+import MapView, { Marker, Polyline, Region } from 'react-native-maps';
 import DatabaseService from '../services/DatabaseService';
 
 interface NearbyStationsMapProps {
@@ -19,11 +19,10 @@ interface NearbyStationsMapProps {
   onClose: () => void;
   onSelectRoute: (route: {
     routeId: string;
-    routeShortName: string;
     variant?: string;
     direction?: 'inbound' | 'outbound';
-    stopId?: string;      // new
-    stopName?: string;    // new
+    stopId?: string;
+    stopName?: string;
   }) => void;
 }
 
@@ -42,22 +41,19 @@ const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const DEFAULT_REGION = {
   latitude: 43.6532,
   longitude: -79.3832,
-  latitudeDelta: 0.5,
-  longitudeDelta: 0.5,
+  latitudeDelta: 0.06,
+  longitudeDelta: 0.06,
 };
 
-// Pre-computed: 1 degree lat ≈ 111km, 1 degree lon ≈ 78km at Toronto's latitude
 const KM_PER_DEGREE_LAT = 111.0;
 const KM_PER_DEGREE_LON_AT_43N = 78.7;
 
-// Fast approximate distance (no trig needed) - good enough for filtering
 const fastDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const dLat = (lat2 - lat1) * KM_PER_DEGREE_LAT;
   const dLon = (lon2 - lon1) * KM_PER_DEGREE_LON_AT_43N;
   return Math.sqrt(dLat * dLat + dLon * dLon);
 };
 
-// Accurate Haversine for display
 const accurateDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -68,9 +64,8 @@ const accurateDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: numb
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-// 🎯 CONFIG: Max distance and max stations
 const MAX_DISTANCE_KM = 3;
-const MAX_STATIONS = 5;
+const MAX_STATIONS = 10;
 
 const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
   visible,
@@ -78,6 +73,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
   onSelectRoute,
 }) => {
   const [loading, setLoading] = useState(true);
+  const [isLoadingStations, setIsLoadingStations] = useState(false);
   const [stations, setStations] = useState<Station[]>([]);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
@@ -87,55 +83,24 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
   const mapRef = useRef<MapView>(null);
   const dbService = DatabaseService;
 
-  // Use a ref to prevent duplicate loads
   const isLoadingRef = useRef(false);
+  const regionChangeTimeout = useRef<number | null>(null);
 
   useEffect(() => {
     if (visible && !isLoadingRef.current) {
-      loadNearbyStations();
+      loadInitialStations();
     } else if (!visible) {
+      // Clear everything when modal closes
       setSelectedStation(null);
       setSelectedRouteOnMap(null);
       setRoutesForStation([]);
+      if (regionChangeTimeout.current) {
+        clearTimeout(regionChangeTimeout.current);
+      }
     }
   }, [visible]);
 
-  const fitMapToStations = useCallback(() => {
-    if (!mapRef.current || stations.length === 0) return;
-
-    const lats = stations.map(s => s.stop_lat);
-    const lngs = stations.map(s => s.stop_lon);
-
-    if (userLocation) {
-      lats.push(userLocation.latitude);
-      lngs.push(userLocation.longitude);
-    }
-
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLng = Math.min(...lngs);
-    const maxLng = Math.max(...lngs);
-
-    // Add padding so markers aren't at the edge
-    const latPadding = Math.max((maxLat - minLat) * 0.3, 0.01);
-    const lngPadding = Math.max((maxLng - minLng) * 0.3, 0.01);
-
-    mapRef.current.animateToRegion({
-      latitude: (minLat + maxLat) / 2,
-      longitude: (minLng + maxLng) / 2,
-      latitudeDelta: Math.max((maxLat - minLat) + latPadding, 0.03),
-      longitudeDelta: Math.max((maxLng - minLng) + lngPadding, 0.03),
-    }, 500);
-  }, [stations, userLocation]);
-
-  useEffect(() => {
-    if (!loading && stations.length > 0) {
-      const timer = setTimeout(fitMapToStations, 300);
-      return () => clearTimeout(timer);
-    }
-  }, [loading, stations, fitMapToStations]);
-
-  const loadNearbyStations = async () => {
+  const loadInitialStations = async () => {
     if (isLoadingRef.current) return;
     isLoadingRef.current = true;
     setLoading(true);
@@ -157,37 +122,43 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
         Alert.alert('Location Access Denied', 'Showing default GTA area instead');
       }
 
-      await loadStationsInRegion(centerLat, centerLon);
+      if (mapRef.current) {
+        mapRef.current.animateToRegion({
+          latitude: centerLat,
+          longitude: centerLon,
+          latitudeDelta: 0.06,
+          longitudeDelta: 0.06,
+        }, 300);
+      }
 
+      await loadStationsForRegion(centerLat, centerLon);
     } catch (error) {
       console.error('Error loading nearby stations:', error);
       setUserLocation(DEFAULT_REGION);
-      await loadStationsInRegion(DEFAULT_REGION.latitude, DEFAULT_REGION.longitude);
+      await loadStationsForRegion(DEFAULT_REGION.latitude, DEFAULT_REGION.longitude);
     } finally {
       setLoading(false);
       isLoadingRef.current = false;
     }
   };
 
-  const loadStationsInRegion = async (lat: number, lon: number) => {
+  const loadStationsForRegion = async (lat: number, lon: number) => {
+    setIsLoadingStations(true);
     try {
-      // Use fast approximate distance for SQL bounds (slightly larger to be safe)
       const deltaLat = MAX_DISTANCE_KM / KM_PER_DEGREE_LAT;
       const deltaLon = MAX_DISTANCE_KM / KM_PER_DEGREE_LON_AT_43N;
-
       const minLat = lat - deltaLat;
       const maxLat = lat + deltaLat;
       const minLon = lon - deltaLon;
       const maxLon = lon + deltaLon;
 
-      // 🎯 SINGLE QUERY: Gets stops + all their routes in one shot
       const query = `
         SELECT 
           s.stop_id,
           s.stop_name,
           CAST(s.stop_lat AS REAL) as stop_lat,
           CAST(s.stop_lon AS REAL) as stop_lon,
-          GROUP_CONCAT(DISTINCT sr.route_id || '|' || sr.route_short_name || '|' || COALESCE(sr.route_variant, '')) as route_data
+          GROUP_CONCAT(DISTINCT sr.route_id || '|' || sr.route_id || '|' || COALESCE(sr.route_variant, '')) as route_data
         FROM stops s
         LEFT JOIN stop_routes sr ON s.stop_id = sr.stop_id
         WHERE s.stop_lat BETWEEN ? AND ?
@@ -202,15 +173,11 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
         minLat, maxLat, minLon, maxLon
       ]);
 
-      // Process all results in one pass (no async/await in loop!)
       const nearbyStations: Station[] = [];
-      
       for (const row of results) {
-        // Fast filter: skip if >3km away
         const fastDist = fastDistanceKm(lat, lon, row.stop_lat, row.stop_lon);
         if (fastDist > MAX_DISTANCE_KM) continue;
 
-        // Parse aggregated route data
         const routes = new Set<string>();
         const routeDetails = new Map<string, { routeId: string; variant?: string }>();
 
@@ -239,19 +206,30 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
         });
       }
 
-      // Sort by distance and take only top 5
       nearbyStations.sort((a, b) => (a.distance || 999) - (b.distance || 999));
       const topStations = nearbyStations.slice(0, MAX_STATIONS);
-
       setStations(topStations);
-      console.log(`Loaded ${topStations.length} stations within ${MAX_DISTANCE_KM}km`);
-
     } catch (error) {
       console.error('Error loading stations in region:', error);
+    } finally {
+      setIsLoadingStations(false);
     }
   };
 
+  const onRegionChangeComplete = useCallback((region: Region) => {
+    if (regionChangeTimeout.current) {
+      clearTimeout(regionChangeTimeout.current);
+    }
+    regionChangeTimeout.current = setTimeout(() => {
+      // ✅ Do NOT clear selectedStation or selectedRouteOnMap automatically.
+      // The user can close the panel via the ✕ button. The panel stays visible.
+      loadStationsForRegion(region.latitude, region.longitude);
+    }, 300);
+  }, []);
+
   const handleStationPress = (station: Station) => {
+    // Replace any previously selected station (clear route preview too)
+    setSelectedRouteOnMap(null);
     setSelectedStation(station);
     setLoadingRoutes(true);
 
@@ -259,7 +237,6 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
       const details = station.routeDetails.get(routeShortName);
       return {
         route_id: details?.routeId || '',
-        route_short_name: routeShortName,
         route_long_name: '',
         route_variant: details?.variant,
       };
@@ -271,22 +248,18 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
 
   const enrichRoutesWithNames = async (station: Station) => {
     if (station.routes.size === 0) return;
-    
-    const routeShortNames = Array.from(station.routes).map(name => `'${name}'`).join(',');
-    
+    const routeIds = Array.from(station.routes).map(name => `'${name}'`).join(',');
     const query = `
-      SELECT DISTINCT r.route_short_name, r.route_long_name
+      SELECT DISTINCT r.route_id, r.route_long_name
       FROM routes r
-      WHERE r.route_short_name IN (${routeShortNames})
+      WHERE r.route_id IN (${routeIds})
     `;
-    
     try {
       const names = await dbService.executeCustomQuery<any>(query);
-      const nameMap = new Map(names.map(n => [n.route_short_name, n.route_long_name]));
-      
+      const nameMap = new Map(names.map(n => [n.route_id, n.route_long_name]));
       setRoutesForStation(prev => prev.map(r => ({
         ...r,
-        route_long_name: nameMap.get(r.route_short_name) || r.route_long_name,
+        route_id: nameMap.get(r.route_id) || r.route_long_name,
       })));
     } catch (e) {
       console.error('Error fetching route names:', e);
@@ -306,18 +279,15 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
         new Date(),
         route.route_variant
       );
-
       setSelectedRouteOnMap({
         ...route,
         direction,
         shape,
-        selectedStation: selectedStation,
+        selectedStation,
       });
-
       if (shape && shape.length > 0 && mapRef.current) {
         const lats = shape.map(p => p.latitude);
         const lngs = shape.map(p => p.longitude);
-
         mapRef.current.animateToRegion({
           latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
           longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2,
@@ -334,11 +304,10 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
     if (selectedRouteOnMap) {
       onSelectRoute({
         routeId: selectedRouteOnMap.route_id,
-        routeShortName: selectedRouteOnMap.route_short_name,
         variant: selectedRouteOnMap.route_variant,
         direction: selectedRouteOnMap.direction,
-        stopId: selectedStation?.stop_id,      // pass the station
-        stopName: selectedStation?.stop_name,  // pass the station name
+        stopId: selectedStation?.stop_id,
+        stopName: selectedStation?.stop_name,
       });
       onClose();
     }
@@ -347,16 +316,10 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
   if (!visible) return null;
 
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      presentationStyle="fullScreen"
-    >
+    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen">
       <View style={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>
-            Nearby Stations ({MAX_DISTANCE_KM}km)
-          </Text>
+          <Text style={styles.headerTitle}>Nearby Stations ({MAX_DISTANCE_KM}km)</Text>
           <TouchableOpacity onPress={onClose} style={styles.closeButton}>
             <Text style={styles.closeButtonText}>✕</Text>
           </TouchableOpacity>
@@ -364,7 +327,7 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
 
         {loading ? (
           <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#00A1E0" />
+            <ActivityIndicator size="large" color="#335B00" />
             <Text style={styles.loadingText}>Finding nearby stations...</Text>
           </View>
         ) : (
@@ -380,17 +343,15 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
                 latitudeDelta: 0.06,
                 longitudeDelta: 0.06,
               } : DEFAULT_REGION}
+              onRegionChangeComplete={onRegionChangeComplete}
             >
               {stations.map((station) => (
                 <Marker
                   key={station.stop_id}
-                  coordinate={{
-                    latitude: station.stop_lat,
-                    longitude: station.stop_lon,
-                  }}
+                  coordinate={{ latitude: station.stop_lat, longitude: station.stop_lon }}
                   title={station.stop_name}
                   description={`${station.routes.size} route(s) • ${station.distance?.toFixed(1)}km`}
-                  pinColor={station.stop_name.toLowerCase().includes('union') ? '#FF6B6B' : '#00A1E0'}
+                  pinColor={station.stop_name.toLowerCase().includes('union') ? '#FF6B6B' : '#335B00'}
                   onPress={() => handleStationPress(station)}
                 />
               ))}
@@ -406,12 +367,10 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
               )}
             </MapView>
 
-            {/* Station counter badge */}
-            {!selectedStation && !selectedRouteOnMap && stations.length > 0 && (
-              <View style={styles.stationCounter}>
-                <Text style={styles.stationCounterText}>
-                  {stations.length} station{stations.length !== 1 ? 's' : ''} within {MAX_DISTANCE_KM}km
-                </Text>
+            {isLoadingStations && (
+              <View style={styles.loadingOverlay}>
+                <ActivityIndicator size="large" color="#335B00" />
+                <Text style={styles.loadingOverlayText}>Updating stations…</Text>
               </View>
             )}
 
@@ -422,16 +381,13 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
                   <Text style={styles.infoDistance}>
                     {selectedStation.distance?.toFixed(1)}km away
                   </Text>
-                  <TouchableOpacity
-                    onPress={() => setSelectedStation(null)}
-                    style={styles.infoCloseButton}
-                  >
+                  <TouchableOpacity onPress={() => setSelectedStation(null)} style={styles.infoCloseButton}>
                     <Text style={styles.infoCloseText}>✕</Text>
                   </TouchableOpacity>
                 </View>
 
                 {loadingRoutes ? (
-                  <ActivityIndicator size="small" color="#00A1E0" />
+                  <ActivityIndicator size="small" color="#335B00" />
                 ) : (
                   <>
                     <Text style={styles.routesLabel}>Available Routes:</Text>
@@ -439,8 +395,8 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
                       <View key={idx} style={styles.routeItem}>
                         <View style={styles.routeHeader}>
                           <Text style={styles.routeNumber}>
-                            Route {route.route_short_name}
-                            {route.route_variant && route.route_variant !== route.route_short_name &&
+                            Route {route.route_id}
+                            {route.route_variant && route.route_variant !== route.route_id &&
                               ` (${route.route_variant})`}
                           </Text>
                           {route.route_long_name ? (
@@ -474,8 +430,8 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
             {selectedRouteOnMap && (
               <View style={styles.previewPanel}>
                 <Text style={styles.previewTitle}>
-                  Route {selectedRouteOnMap.route_short_name}
-                  {selectedRouteOnMap.route_variant !== selectedRouteOnMap.route_short_name &&
+                  Route {selectedRouteOnMap.route_id}
+                  {selectedRouteOnMap.route_variant !== selectedRouteOnMap.route_id &&
                     ` (${selectedRouteOnMap.route_variant})`}
                 </Text>
                 <Text style={styles.previewDirection}>
@@ -484,16 +440,10 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
                     : `← From Union Station to ${selectedRouteOnMap.selectedStation?.stop_name || 'your station'}`}
                 </Text>
                 <View style={styles.previewButtons}>
-                  <TouchableOpacity
-                    style={styles.confirmButton}
-                    onPress={confirmRouteSelection}
-                  >
+                  <TouchableOpacity style={styles.confirmButton} onPress={confirmRouteSelection}>
                     <Text style={styles.confirmButtonText}>Select This Route</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.cancelPreviewButton}
-                    onPress={() => setSelectedRouteOnMap(null)}
-                  >
+                  <TouchableOpacity style={styles.cancelPreviewButton} onPress={() => setSelectedRouteOnMap(null)}>
                     <Text style={styles.cancelPreviewText}>Cancel</Text>
                   </TouchableOpacity>
                 </View>
@@ -508,13 +458,13 @@ const NearbyStationsMap: React.FC<NearbyStationsMapProps> = ({
               </View>
             )}
 
-            {!selectedStation && !selectedRouteOnMap && stations.length === 0 && (
+            {!selectedStation && !selectedRouteOnMap && stations.length === 0 && !isLoadingStations && (
               <View style={styles.instructions}>
                 <Text style={styles.instructionsText}>
                   🗺️ No stations found within {MAX_DISTANCE_KM}km
                 </Text>
                 <Text style={styles.instructionsSubtext}>
-                  Try moving to a different location
+                  Try moving the map to a different area
                 </Text>
               </View>
             )}
@@ -532,8 +482,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 16,
-    backgroundColor: '#00A1E0',
-    paddingTop: 48,
+    backgroundColor: '#335B00',
+    paddingTop: 16,
   },
   headerTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   closeButton: { padding: 8 },
@@ -541,20 +491,19 @@ const styles = StyleSheet.create({
   map: { flex: 1 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { marginTop: 10, color: '#666' },
-  stationCounter: {
+  loadingOverlay: {
     position: 'absolute',
     top: 80,
     alignSelf: 'center',
-    backgroundColor: 'rgba(0, 161, 224, 0.9)',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderRadius: 8,
     paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 20,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
-  stationCounterText: {
-    color: '#fff',
-    fontSize: 13,
-    fontWeight: '600',
-  },
+  loadingOverlayText: { color: '#fff', fontSize: 12, marginLeft: 8 },
   infoPanel: {
     position: 'absolute',
     bottom: 0,
@@ -578,12 +527,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   infoTitle: { fontSize: 18, fontWeight: 'bold', color: '#333', flex: 1 },
-  infoDistance: {
-    fontSize: 14,
-    color: '#00A1E0',
-    fontWeight: '600',
-    marginRight: 12,
-  },
+  infoDistance: { fontSize: 14, color: '#335B00', fontWeight: '600', marginRight: 12 },
   infoCloseButton: { padding: 4 },
   infoCloseText: { fontSize: 18, color: '#666' },
   routesLabel: { fontSize: 14, fontWeight: '600', color: '#666', marginBottom: 8 },
@@ -594,7 +538,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   routeHeader: { marginBottom: 8 },
-  routeNumber: { fontSize: 16, fontWeight: 'bold', color: '#00A1E0' },
+  routeNumber: { fontSize: 16, fontWeight: 'bold', color: '#335B00' },
   routeName: { fontSize: 12, color: '#666', marginTop: 2 },
   directionButtons: { flexDirection: 'row', gap: 8 },
   directionButton: { flex: 1, paddingVertical: 8, borderRadius: 6, alignItems: 'center' },
@@ -619,7 +563,7 @@ const styles = StyleSheet.create({
   previewTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', textAlign: 'center' },
   previewDirection: { fontSize: 14, color: '#666', textAlign: 'center', marginTop: 4, marginBottom: 12 },
   previewButtons: { flexDirection: 'row', gap: 8 },
-  confirmButton: { flex: 1, backgroundColor: '#00A1E0', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  confirmButton: { flex: 1, backgroundColor: '#335B00', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   confirmButtonText: { color: '#fff', fontWeight: 'bold' },
   cancelPreviewButton: { flex: 1, backgroundColor: '#f0f0f0', paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
   cancelPreviewText: { color: '#666' },

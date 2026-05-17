@@ -3,7 +3,7 @@ import { Asset } from 'expo-asset';
 import { Directory, File, Paths } from 'expo-file-system';
 
 // Update this version number when you need to upgrade the database
-const DB_VERSION = 1;
+const DB_VERSION = 6;
 
 export async function loadDatabase(): Promise<boolean> {
   const dbName = 'go_transit.db';

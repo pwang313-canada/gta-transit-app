@@ -178,7 +178,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#f5f5f5',
   },
   header: {
-    backgroundColor: '#00A1E0',
+    backgroundColor: '#335B00',
     padding: 20,
     alignItems: 'center',
   },
@@ -224,7 +224,7 @@ const styles = StyleSheet.create({
   favoriteLine: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#00A1E0',
+    color: '#335B00',
   },
   favoriteDelete: {
     fontSize: 16,
@@ -243,7 +243,7 @@ const styles = StyleSheet.create({
   arrow: {
     fontSize: 18,
     marginHorizontal: 10,
-    color: '#00A1E0',
+    color: '#335B00',
   },
   favoriteDate: {
     fontSize: 11,
