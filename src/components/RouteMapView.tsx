@@ -101,17 +101,17 @@ const RouteMapView: React.FC<RouteMapViewProps> = ({
 
       setStops(stopsWithCoords);
 
-      // 2. Get shape_id from trips table using route_variant, direction, and service_id
+      // 2. Get shape_id from trips table using route_variant, direction
       const shapeQuery = `
         SELECT DISTINCT shape_id
         FROM trips
-        WHERE route_variant = ? AND direction_id = ? AND service_id = ?
+        WHERE route_variant = ? AND direction_id = ?
           AND shape_id IS NOT NULL AND shape_id != ''
         LIMIT 1
       `;
       const shapeRows = await dbService.executeCustomQuery<{ shape_id: string }>(
         shapeQuery,
-        [variant, direction, serviceId]
+        [variant, direction]
       );
 
       let shapeData: Array<{ latitude: number; longitude: number }> = [];

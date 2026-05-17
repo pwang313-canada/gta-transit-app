@@ -269,6 +269,7 @@ export default function HomeScreen() {
     setArrivalStop(null);
 
     try {
+      console.log(`++++++[DEBUG] Loading line data for variant=${effectiveRouteGroup.variant}, direction=${directionCode}, date=${formatDate(selectedDate)}`);
       const lineData = await getLineData(effectiveRouteGroup.variant, directionCode, selectedDate);
       if (!lineData || !lineData.Trip || lineData.Trip.length === 0) {
         Alert.alert('No Schedule', `No trips found for ${effectiveRouteGroup.routeId} ${directionCode} on ${formatDate(selectedDate)}`);
@@ -427,7 +428,7 @@ export default function HomeScreen() {
       const rows = await dbService.executeCustomQuery<any>(`
         SELECT DISTINCT
           t.route_variant,
-          r.route_short_name,
+          r.route_id AS route_short_name,
           r.route_long_name
         FROM trips t
         JOIN routes r ON t.route_id = r.route_id
